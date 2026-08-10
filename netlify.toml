@@ -2,6 +2,12 @@
   publish = "."
   functions = "netlify/functions"
 
+[[redirects]]
+  from = "/api/google-reviews"
+  to = "/.netlify/functions/google-reviews"
+  status = 200
+  force = true
+
 [[headers]]
   for = "/*"
   [headers.values]
