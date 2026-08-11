@@ -11,4 +11,3 @@ export default async () => {
     return new Response(JSON.stringify({connected:true,rating:place.rating??5,reviewCount:place.userRatingCount??reviews.length,placeId,googleMapsUri:place.googleMapsUri,reviews}),{headers});
   }catch{return new Response(JSON.stringify({connected:false}),{status:502,headers});}
 };
- 
