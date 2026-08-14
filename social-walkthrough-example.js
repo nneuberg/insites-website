@@ -5,7 +5,7 @@
 
   function addExample() {
     const summary = document.querySelector(".service-summary-copy");
-    if (!summary || summary.querySelector(".social-walkthrough-example")) return;
+    if (!summary || document.querySelector(".social-walkthrough-example")) return;
 
     const figure = document.createElement("figure");
     figure.className = "service-inline-example social-walkthrough-example";
