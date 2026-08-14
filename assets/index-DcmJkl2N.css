@@ -18,3 +18,36 @@
   .realtor-values .value-grid p{color:var(--muted)}
   .service-inline-example.social-walkthrough-example{width:min(100%,220px);margin:30px auto 0}
 }
+
+/* Final desktop title and service-example placement. */
+@media (width>=901px){
+  h1{font-size:clamp(2.65rem,3.15vw,3.6rem);font-weight:520;line-height:1.02}
+  h2{font-size:clamp(1.75rem,1.9vw,2.15rem);font-weight:500;line-height:1.08}
+  .hero-content h1,.page-hero-inner h1,.service-detail-grid h1{max-width:780px;font-size:clamp(2.65rem,3.15vw,3.6rem)}
+  .service-why{grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);gap:6vw}
+  .service-why>div:first-child>.eyebrow{visibility:visible}
+  .service-why>.service-summary-copy{padding-top:0}
+  .service-why>.service-summary-copy:before{content:none}
+  .service-why>.service-summary-copy>.eyebrow{margin-bottom:20px}
+  .service-why>div:first-child>.service-inline-example,
+  .service-why>div:first-child>.service-video-preview{margin:30px auto 0}
+  .service-why>div:first-child>.social-walkthrough-example{width:min(100%,190px)}
+  .service-why>div:first-child>.social-walkthrough-example video{border-radius:16px;overflow:hidden}
+  .service-why>div:first-child>.service-video-preview{width:min(100%,520px);text-align:center}
+  .service-why>div:first-child>.service-video-preview .eyebrow,
+  .service-why>div:first-child>.service-video-preview .service-video-instruction,
+  .service-why>div:first-child>.service-video-preview .service-video-hint{text-align:center}
+  .dark-panel h2,.promise-heading h2,.realtor-card h2,.addons-heading h2,
+  .property-media-heading h2,.photo-service-copy h2,.quote-band blockquote,
+  .credentials-copy h2,.reviews-header h2,.footer-top h2,.booking-cards h2,
+  .media-request-intro h2,.media-success h3{
+    font-size:clamp(1.75rem,1.9vw,2.15rem);
+    font-weight:500;
+    line-height:1.08;
+  }
+  .schedule-intro h1,.about-intro h1{
+    font-size:clamp(2.65rem,3.15vw,3.6rem);
+    font-weight:520;
+    line-height:1.02;
+  }
+}
