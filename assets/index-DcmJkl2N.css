@@ -19,6 +19,37 @@
   .service-inline-example.social-walkthrough-example{width:min(100%,220px);margin:30px auto 0}
 }
 
+/* Desktop title line targets, centered pricing, and restored floor-plan example. */
+@media (width>=901px){
+  .page-hero-inner h1{
+    max-width:none;
+    font-size:clamp(2.6rem,3vw,3.35rem);
+    white-space:nowrap;
+  }
+  .service-detail-grid>div{min-width:0}
+  .service-detail-grid h1{
+    max-width:none;
+    font-size:clamp(2.55rem,2.85vw,3.1rem);
+    white-space:nowrap;
+  }
+  body.service-wdi .service-detail-grid h1{
+    white-space:normal;
+    line-height:1.03;
+  }
+  .service-detail-grid aside{
+    text-align:center;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+  }
+  .service-detail-grid aside p{max-width:280px;margin-inline:auto}
+  .service-why>div:first-child>.floor-plan-example{
+    width:min(100%,520px);
+    margin:30px auto 0;
+  }
+}
+
 /* Final desktop title and service-example placement. */
 @media (width>=901px){
   h1{font-size:clamp(2.65rem,3.15vw,3.6rem);font-weight:520;line-height:1.02}
