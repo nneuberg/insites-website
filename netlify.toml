@@ -8,6 +8,12 @@
   status = 200
   force = true
 
+[[redirects]]
+  from = "/inspections"
+  to = "/add-on"
+  status = 301
+  force = true
+
 [[headers]]
   for = "/*"
   [headers.values]
