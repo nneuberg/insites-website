@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Referral Rewards | InSites Inspection Services</title>
+  <meta name="description" content="A little thank-you for a good introduction. Give a friend $25 off a full home inspection and earn a $25 Amazon gift card.">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  <meta name="referrer" content="no-referrer">
+  <link rel="canonical" href="https://www.insites.services/referral/">
+  <link rel="icon" href="/insites-logo-tan.png">
+  <link rel="stylesheet" href="/referral/referral.css">
+  <script src="/referral/referral.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="InSites home"><img class="brand-mark" src="/insites-logo-tan.png" alt="" width="48" height="48"><img class="brand-wordmark" src="/insites-wordmark-official.png" alt="InSites Inspection Services" width="186"></a>
+    <a class="back-link" href="/">Back to InSites <span aria-hidden="true">↗</span></a>
+  </header>
+  <main id="main">
+    <section class="intro" aria-labelledby="page-title">
+      <p class="eyebrow">InSites Referral Rewards</p>
+      <h1 id="page-title">Good friends.<br><span>Good introductions.</span></h1>
+      <p class="intro-copy">Know someone buying a home? Give them <strong>$25 off a full home inspection</strong>. Once their inspection is completed and paid, you’ll earn a <strong>$25 Amazon gift card</strong> as our thank-you.</p>
+      <p class="intro-note">For our past clients. A little appreciation, every time you refer.</p>
+    </section>
+
+    <section class="form-card" aria-labelledby="form-title">
+      <div class="form-heading"><div><p class="eyebrow">Give $25. Get $25.</p><h2 id="form-title">Introduce your friend.</h2></div><span class="card-arrow" aria-hidden="true">↗</span></div>
+      <p class="form-intro">Four details. One thoughtful introduction.</p>
+      <form name="insites-referral" method="POST" action="/referral/thanks/" data-netlify="true" netlify-honeypot="company" id="referral-form">
+        <input type="hidden" name="form-name" value="insites-referral">
+        <input type="hidden" name="termsVersion" value="2026-09-30">
+        <input type="hidden" name="referralId" value="">
+        <div class="honeypot" aria-hidden="true"><label>Leave this blank<input name="company" tabindex="-1" autocomplete="off"></label></div>
+        <fieldset><legend><span>01</span> Your details</legend><div class="field-grid">
+          <div class="field"><label for="referrerName">Your full name</label><input id="referrerName" name="referrerName" autocomplete="name" maxlength="100" required></div>
+          <div class="field"><label for="referrerEmail">Your email</label><input id="referrerEmail" name="referrerEmail" type="email" autocomplete="email" maxlength="254" required aria-describedby="referrer-help"></div>
+        </div><p class="field-help" id="referrer-help">Use the email from your InSites inspection so we can confirm you’re a past client.</p></fieldset>
+        <fieldset><legend><span>02</span> Your friend’s details</legend><div class="field-grid">
+          <div class="field"><label for="friendName">Their full name</label><input id="friendName" name="friendName" autocomplete="off" maxlength="100" required></div>
+          <div class="field"><label for="friendEmail">Their email</label><input id="friendEmail" name="friendEmail" type="email" autocomplete="off" maxlength="254" required aria-describedby="friend-help"></div>
+        </div><p class="field-help" id="friend-help"><strong>The email matters.</strong> Enter their correct email address. We’ll use it to match their inspection to your referral, so they must use the same email when booking.</p></fieldset>
+        <div class="acknowledgements">
+          <label class="check"><input type="checkbox" name="eligibility" value="confirmed" required><span>I’m a past InSites client, am not a real-estate licensee, and have no financial interest in my friend’s transaction.</span></label>
+          <label class="check"><input type="checkbox" name="permissionAndTerms" value="accepted" required><span>I have my friend’s permission to share their details with InSites about this referral, and I agree to the <a href="#terms">program rules below</a>.</span></label>
+        </div>
+        <button type="submit" class="button" id="submit-referral">Send my referral <span aria-hidden="true">→</span></button>
+        <p id="form-status" class="form-status" role="status" aria-live="polite"></p>
+        <p class="privacy-note">We use these details to manage your referral. This form does not subscribe your friend to marketing emails.</p>
+      </form>
+      <div id="referral-success" class="success" tabindex="-1" hidden><span class="success-mark" aria-hidden="true">✓</span><h3>Thanks for the introduction.</h3><p>Your referral has been received for eligibility review. Remind your friend to use the same email when booking and enter <strong>REFERRED25</strong> for $25 off a qualifying full home inspection.</p><p class="reference" id="referral-reference"></p><a class="button" href="/referral/">Refer another friend <span aria-hidden="true">→</span></a></div>
+    </section>
+
+    <section class="terms" id="terms" aria-labelledby="terms-title">
+      <div class="terms-heading"><p class="eyebrow">A few things to know</p><h2 id="terms-title">Simple rewards.<br>Clear rules.</h2><p>Here’s how your introduction becomes a thank-you.</p></div>
+      <ol class="rules">
+        <li><h3>For past clients. For new friends.</h3><p>You must be a past InSites inspection client. Your friend must be a new InSites client, and the referral must be submitted before they book. Self-referrals do not qualify. Real-estate licensees and anyone with a financial interest in the closing or settlement of the referred transaction are not eligible for referral rewards.</p></li>
+        <li><h3>They save $25. You earn $25.</h3><p>Your friend receives $25 off a full home inspection using <strong>REFERRED25</strong> when scheduling. You receive a $25 Amazon gift card for each qualifying referral. Standalone add-on services do not qualify. The discount cannot be combined with other promotional discounts unless InSites states otherwise.</p></li>
+        <li><h3>Completed and paid comes first.</h3><p>The referred inspection must be completed and paid in full. After both conditions are met, there is a 24-hour waiting period before reward fulfillment and eligibility verification. Canceled, unpaid, refunded, or disputed inspections do not qualify.</p></li>
+        <li><h3>The same email connects the dots.</h3><p>We track referrals using the email address you submit. Your friend must book with that same email. An incorrect or different email may prevent us from matching the referral, and the reward may be missed or not issued. InSites is not responsible for rewards that cannot be matched because of inaccurate or differing contact information. Need to correct an email? <a href="mailto:neal@insites.services">Contact Neal</a> before booking.</p></li>
+        <li><h3>No limit on good introductions.</h3><p>There’s no limit to the number of qualifying friends you can refer. One reward is available per referred new client; if more than one person refers the same friend, the first eligible referral received gets credit. Rewards are non-transferable and cannot be exchanged for cash.</p></li>
+        <li><h3>Six months to claim your thank-you.</h3><p>Claim your $25 Amazon reward within six months of the reward’s issue date. Unclaimed reward links expire after that period. Once claimed for an Amazon gift card, the gift card’s own terms apply; this six-month window applies to claiming the reward.</p></li>
+        <li><h3>Permission, privacy, and honest service.</h3><p>Get your friend’s permission before sharing their name and email. We use the information to verify eligibility, match their inspection, and administer the referral and reward. We do not share their inspection findings with you. No review or positive rating is required. Rewards do not depend on inspection results or whether a property sale closes.</p></li>
+      </ol>
+      <div class="questions"><p><strong>A question about your referral?</strong><br>Neal is happy to help.</p><div><a href="mailto:neal@insites.services">neal@insites.services <span aria-hidden="true">↗</span></a><a href="tel:+13309909700">330-990-9700</a></div></div>
+      <p class="terms-version">Program terms · September 30, 2026</p>
+    </section>
+  </main>
+  <footer class="footer"><p>Know the home. <span>Move with confidence.</span></p><small>© 2026 InSites Inspection Services</small></footer>
+</body>
+</html>
