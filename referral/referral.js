@@ -28,21 +28,20 @@
     button.textContent = 'Sending your referral…';
     status.dataset.error = 'false';
     status.textContent = '';
-    if (!form.elements.referralId.value) form.elements.referralId.value = crypto.randomUUID();
+    if (!form.elements.referralId.value) form.elements.referralId.value = 'IRR-' + crypto.randomUUID();
     const data = new FormData(form);
     for (const name of ['referrerEmail', 'friendEmail']) data.set(name, normalizeEmail(data.get(name)));
     for (const name of ['referrerName', 'friendName']) data.set(name, data.get(name).trim());
     try {
-      const response = await fetch('/api/referrals', {
+      const response = await fetch('/referral/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams(data).toString(),
         signal: AbortSignal.timeout(20000)
       });
-      const result = await response.json();
-      if (!response.ok || result.ok !== true) throw new Error('Unable to save referral');
+      if (!response.ok) throw new Error('Unable to save referral');
       form.hidden = true;
-      document.getElementById('referral-reference').textContent = 'Submission reference: ' + form.elements.referralId.value;
+      document.getElementById('referral-reference').textContent = 'Your reference: ' + form.elements.referralId.value;
       const success = document.getElementById('referral-success');
       success.hidden = false;
       success.focus();
