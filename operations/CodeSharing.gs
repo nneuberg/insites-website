@@ -77,7 +77,6 @@ function codeDispatch(action,data) {
   if(!owner||owner['Assignment State']!=='ASSIGNED'||owner['Hive State']!=='VERIFIED'||owner['Referrer Email']!==r['Referrer Email'])throw Error('Owner mismatch');
   if(!rewardReady(r))throw Error('Not ready');
   if(all.some(function(u){return u['Use ID']!==r['Use ID']&&(u['Hive Inspection ID']===r['Hive Inspection ID']||u['Client ID']===r['Client ID'])&&(u['Reward State']||u['Reward ID']);}))throw Error('Reward already reserved');
-  if(records('Referrals').some(function(u){return (u['Inspection ID']===r['Hive Inspection ID'])&&(u['Reward State']||u['Reward ID']);}))throw Error('Legacy reward already reserved');
   r['Reward State']='RESERVED';writeRecord('CodeUses',r,'Use ID');return r;
  }
  if(action==='codeRewardSent') {

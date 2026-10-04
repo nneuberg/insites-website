@@ -3,7 +3,7 @@ import {validateShare} from '../netlify/lib/referral-sharing.mjs';
 import {createShareHandler} from '../netlify/functions/referral-share.mjs';
 const input={referrerName:'Past Client',referrerEmail:' Past@example.com ',eligibility:'confirmed',permissionAndTerms:'accepted',referralId:'10000000-0000-4000-8000-000000000000'};
 function harness(){
- const tables={Codes:[{Code:'INS25ABCDEFG','Discount Amount':'25','Hive State':'VERIFIED','Assignment State':'AVAILABLE'}],Alerts:[],Shares:[],CodeUses:[],Referrals:[],Clients:[{Email:'past@example.com',Name:'Past Client','Past Client Verified':'YES'}],Exclusions:[]};
+ const tables={Codes:[{Code:'INS25ABCDEFG','Discount Amount':'25','Hive State':'VERIFIED','Assignment State':'AVAILABLE'}],Alerts:[],Shares:[],CodeUses:[],Clients:[{Email:'past@example.com',Name:'Past Client','Past Client Verified':'YES'}],Exclusions:[]};
  const ctx=vm.createContext({Date,Number,String,Error,Array,JSON,Utilities:{getUuid:()=>crypto.randomUUID()}});
  vm.runInContext(fs.readFileSync(new URL('../operations/Code.gs',import.meta.url),'utf8')+'\n'+fs.readFileSync(new URL('../operations/CodeSharing.gs',import.meta.url),'utf8'),ctx);
  ctx.records=name=>structuredClone(tables[name]);ctx.writeRecord=(name,r,key)=>{const i=tables[name].findIndex(x=>x[key]===r[key]);if(i<0)tables[name].push(structuredClone(r));else tables[name][i]=structuredClone(r);};
@@ -37,3 +37,5 @@ test('low-stock counts only verified unassigned codes and alerts once; replenish
 });
 test('ambiguous sends reuse the alert ID and stop retrying before provider idempotency expires',()=>{const h=harness();const a=h.call('prepareLowCodeAlert',{}),b=h.call('prepareLowCodeAlert',{});assert.equal(a.alertId,b.alertId);h.tables.Alerts[0]['Reserved At']=new Date(Date.now()-24*3600000).toISOString();assert.equal(h.call('prepareLowCodeAlert',{}).review,true);});
 test('referrer form returns a code without sending or storing friend data',async()=>{const h=harness();const handler=createShareHandler({env:{REFERRAL_CODES_ENABLED:'true'},callLedger:async(a,d)=>h.call(a,d)});const req=new Request('https://www.insites.services/api/referral-share',{method:'POST',headers:{origin:'https://www.insites.services','content-type':'application/json'},body:JSON.stringify(input)});const response=await handler(req);assert.equal(response.status,200);assert.equal((await response.json()).code,'INS25ABCDEFG');assert.equal(h.tables.Shares[0]['Friend Email'],undefined);});
+
+test('current ledger needs only Codes, Shares, CodeUses and Alerts',()=>{const h=harness();delete h.tables.Clients;delete h.tables.Exclusions;h.call('prepareShare',validateShare(input));use(h);h.call('codeSnapshot',{});h.call('prepareLowCodeAlert',{});const row=h.tables.CodeUses[0];row['Paid At']=new Date(Date.now()-2*86400000).toISOString();row['Reward Due At']=new Date(Date.now()-86400000).toISOString();assert.equal(h.call('reserveCodeReward',{useId:'HIVE-one'})['Reward State'],'RESERVED');});
