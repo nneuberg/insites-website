@@ -1,6 +1,6 @@
 import {ledger,json} from '../lib/referral-transport.mjs';
-import {validateShare,sendReferralEmail} from '../lib/referral-sharing.mjs';
-export function createShareHandler({callLedger=ledger,sendEmail=sendReferralEmail,env=process.env}={}) {return async request=>{
+import {validateShare} from '../lib/referral-sharing.mjs';
+export function createShareHandler({callLedger=ledger,env=process.env}={}) {return async request=>{
  if(request.method!=='POST')return json({error:'Method not allowed'},405);
  if(!['https://www.insites.services','https://insites.services',env.REFERRAL_PREVIEW_ORIGIN].filter(Boolean).includes(request.headers.get('origin')))return json({error:'Forbidden'},403);
  const raw=await request.text();if(raw.length>4096)return json({error:'Request too large'},413);
@@ -9,11 +9,6 @@ export function createShareHandler({callLedger=ledger,sendEmail=sendReferralEmai
  try {
   const prepared=await callLedger('prepareShare',input,env);
   if(!prepared.code)return json({error:'We need to confirm your past-client details before sharing a code. Contact Neal at 330-990-9700.'},409);
-  if(input.channel==='email' && prepared.status!=='EMAIL SENT') {
-   if(!prepared.canSend)return json({error:'Your earlier email request is being checked. Please contact Neal before trying a new request.'},409);
-   const emailId=await sendEmail({...input,referrerName:prepared.referrerName},prepared.code,env);
-   await callLedger('shareEmailSent',{shareId:input.shareId,requestHash:input.requestHash,emailId},env);
-  }
   return json({ok:true,code:prepared.code},200);
  }catch{return json({error:'We couldn’t confirm your referral. Please retry with these same details, or contact Neal at 330-990-9700.'},503);}
 };}

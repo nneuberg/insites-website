@@ -92,10 +92,11 @@ function verifySelectedReferral(){
 }
 function writeRecord(name,record,key){var s=table(name),values=s.getDataRange().getDisplayValues(),headers=values[0],index=headers.indexOf(key),row=values.findIndex(function(r,i){return i>0&&r[index]===String(record[key]);});if(row<0)row=s.getLastRow();s.getRange(row+1,1,1,headers.length).setValues([headers.map(function(h){return safeCell(record[h]);})]);SpreadsheetApp.flush();}
 function dispatch(action,data){
- if(['codeSnapshot','prepareShare','shareEmailSent','recordCodeUse','reserveCodeReward','codeRewardSent','codeRewardStatus'].includes(action))return codeDispatch(action,data);
+ if(['codeSnapshot','prepareShare','prepareLowCodeAlert','lowCodeAlertSent','recordCodeUse','reserveCodeReward','codeRewardSent','codeRewardStatus'].includes(action))return codeDispatch(action,data);
  var now=new Date().toISOString();
  if(action==='snapshot')return {referrals:records('Referrals'),clients:records('Clients'),exclusions:records('Exclusions'),events:records('Events')};
- if(action==='submit'){
+ if(action==='submit')throw Error('Legacy intake retired');
+ if(action==='legacySubmitDisabled'){
   var input=validateSubmission(data);
   var all=records('Referrals');
   if(all.some(function(r){return r['Request ID']===input.idempotencyKey;}))return {accepted:true};

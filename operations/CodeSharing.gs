@@ -5,43 +5,49 @@ function codeDispatch(action,data) {
  var now=new Date().toISOString(), codes=records('Codes'), shares=records('Shares');
  if(action==='codeSnapshot')return {codes:codes,shares:shares,uses:records('CodeUses')};
  if(action==='prepareShare') {
-  if(!['text','email'].includes(data.channel)||!/^[-a-f0-9]{36}$/i.test(data.shareId||'')||! /^[a-f0-9]{64}$/.test(data.requestHash||''))throw Error('Invalid share');
+  if(!/^[-a-f0-9]{36}$/i.test(data.shareId||'')||! /^[a-f0-9]{64}$/.test(data.requestHash||''))throw Error('Invalid request');
+  if(data.friendEmail||data.friendName||data.channel)throw Error('Only referrer details accepted');
   var address=email(data.referrerEmail);
-  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)||!data.referrerName||data.termsVersion!=='2026-10-04')throw Error('Invalid share');
-  if(data.channel==='email'&&(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.friendEmail||'')||email(data.friendEmail)===address||!data.friendName))throw Error('Invalid friend');
-  var check=eligible({'Referrer Email':address,'Friend Email':data.channel==='email'?data.friendEmail:''},records('Clients'),records('Exclusions'));
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)||!data.referrerName||data.termsVersion!=='2026-10-04-personal-share')throw Error('Invalid referrer');
+  var check=eligible({'Referrer Email':address,'Friend Email':''},records('Clients'),records('Exclusions'));
   if(check.state!=='ELIGIBLE')return {pending:true};
   var previous=shares.find(function(s){return s['Share ID']===data.shareId;});
   if(previous) {
    if(previous['Request Hash']!==data.requestHash||previous['Referrer Email']!==address)throw Error('Request changed');
-   // Resend retains an idempotency key for 24h; never retry beyond 23h.
-   return {code:previous.Code,status:previous.Status,canSend:previous.Status==='EMAIL RESERVED'&&Date.now()-Date.parse(previous['Email Reserved At'])<23*3600000,referrerName:codes.find(function(c){return c.Code===previous.Code;})['Referrer Name']};
+   var prior=codes.find(function(c){return c.Code===previous.Code;});
+   if(!prior||prior['Hive State']!=='VERIFIED'||prior['Assignment State']!=='ASSIGNED'||email(prior['Referrer Email'])!==address)throw Error('Code unavailable');
+   return {code:prior.Code};
   }
-  var recent=shares.filter(function(s){return s['Referrer Email']===address&&Date.now()-Date.parse(s['Created At'])<3600000;});
-  if(recent.length>=10)throw Error('Too many shares');
-  if(data.channel==='email'&&shares.some(function(s){return s['Referrer Email']===address&&s['Friend Email']===data.friendEmail&&s.Channel==='email'&&Date.now()-Date.parse(s['Created At'])<86400000;}))throw Error('Friend already contacted; review previous share');
+  if(shares.filter(function(s){return s['Referrer Email']===address&&Date.now()-Date.parse(s['Created At'])<3600000;}).length>=10)throw Error('Too many requests');
   var owned=codes.filter(function(c){return email(c['Referrer Email'])===address;});
-  // Returning clients retain the oldest active code. Additional codes stay linked.
   var code=owned.filter(function(c){return c['Hive State']==='VERIFIED'&&c['Assignment State']==='ASSIGNED';}).sort(function(a,b){return Date.parse(a['Assigned At'])-Date.parse(b['Assigned At']);})[0];
   if(owned.length&&!code)throw Error('Existing codes need review');
-  if(code&&(code['Hive State']!=='VERIFIED'||code['Assignment State']!=='ASSIGNED'))throw Error('Code unavailable');
   if(!code) {
-   code=codes.find(function(c){return c['Hive State']==='VERIFIED'&&c['Assignment State']==='AVAILABLE'&&!c['Referrer Email']&&!c['Referrer ID']&&Number(c['Discount Amount'])===25;});
+   code=codes.find(codeAvailable);
    if(!code)throw Error('No codes available');
    var client=records('Clients').find(function(c){return email(c.Email)===address&&c['Past Client Verified']==='YES';});
    code['Assignment State']='ASSIGNED';code['Referrer ID']='OWNER-'+Utilities.getUuid();code['Referrer Name']=client.Name||data.referrerName;code['Referrer Email']=address;code['Assigned At']=now;
    writeRecord('Codes',code,'Code');
   }
-  var status=data.channel==='email'?'EMAIL RESERVED':'TEXT READY';
-  writeRecord('Shares',{'Share ID':data.shareId,'Created At':now,Channel:data.channel,Code:code.Code,'Referrer Email':address,'Friend Name':data.friendName||'','Friend Email':data.friendEmail||'',Status:status,'Email Reserved At':data.channel==='email'?now:'','Consent At':now,'Terms Version':data.termsVersion,'Request Hash':data.requestHash},'Share ID');
-  return {code:code.Code,status:status,canSend:data.channel==='email',referrerName:code['Referrer Name']};
+  writeRecord('Shares',{'Share ID':data.shareId,'Created At':now,Code:code.Code,'Referrer Name':code['Referrer Name'],'Referrer Email':address,Status:'CODE READY','Consent At':now,'Terms Version':data.termsVersion,'Request Hash':data.requestHash},'Share ID');
+  return {code:code.Code};
  }
- if(action==='shareEmailSent') {
-  var share=shares.find(function(s){return s['Share ID']===data.shareId;});
-  if(!share||share['Request Hash']!==data.requestHash||!data.emailId||share.Channel!=='email')throw Error('Receipt required');
-  if(share.Status==='EMAIL SENT'){if(share['Email ID']!==data.emailId)throw Error('Different receipt');return {updated:false};}
-  if(share.Status!=='EMAIL RESERVED')throw Error('Not reserved');
-  share.Status='EMAIL SENT';share['Email ID']=data.emailId;share['Email Sent At']=now;writeRecord('Shares',share,'Share ID');return {updated:true};
+ if(action==='prepareLowCodeAlert') {
+  var count=codes.filter(codeAvailable).length,alerts=records('Alerts'),open=alerts.filter(function(a){return !a['Closed At'];});
+  if(count>5){open.forEach(function(a){a['Closed At']=now;writeRecord('Alerts',a,'Alert ID');});return {send:false,remaining:count};}
+  if(open.length>1)throw Error('Ambiguous alert state');
+  var alert=open[0];
+  if(alert&&alert.Status==='SENT')return {send:false,remaining:count};
+  if(alert&&Date.now()-Date.parse(alert['Reserved At'])>=23*3600000){alert.Status='REVIEW REQUIRED';writeRecord('Alerts',alert,'Alert ID');return {send:false,review:true};}
+  if(!alert){alert={'Alert ID':'LOW-'+Utilities.getUuid(),'Reserved At':now,'Available Codes':count,Recipient:'neal@insites.services',Status:'RESERVED'};writeRecord('Alerts',alert,'Alert ID');}
+  return {send:true,alertId:alert['Alert ID'],remaining:Number(alert['Available Codes']),recipient:alert.Recipient};
+ }
+ if(action==='lowCodeAlertSent') {
+  var alert=records('Alerts').find(function(a){return a['Alert ID']===data.alertId;});
+  if(!alert||!data.emailId)throw Error('Alert receipt required');
+  if(alert.Status==='SENT'){if(alert['Email ID']!==data.emailId)throw Error('Receipt mismatch');return {updated:false};}
+  if(alert.Status!=='RESERVED')throw Error('Alert not reserved');
+  alert.Status='SENT';alert['Email ID']=data.emailId;alert['Sent At']=now;writeRecord('Alerts',alert,'Alert ID');return {updated:true};
  }
  if(action==='recordCodeUse') {
   // Called only after authenticated Hive fetch. Unknown provider fields must remain unknown.
@@ -51,7 +57,7 @@ function codeDispatch(action,data) {
   if(matches.length!==1)return {matched:false};
   var code=matches[0],id='HIVE-'+i.id,all=records('CodeUses'),old=all.find(function(u){return u['Use ID']===id;});
   if(old&&(old.Code!==code.Code||old['Client ID']!==String(i.clientId))){old['Hold Reason']='Code or client changed; review attribution';old['Reward Due At']='';writeRecord('CodeUses',old,'Use ID');return {held:true};}
-  var r=old||{'Use ID':id,Code:code.Code,'Referrer Name':code['Referrer Name'],'Referrer Email':code['Referrer Email'],'Hive Inspection ID':i.id,'Client ID':String(i.clientId),'Client Email':email(i.clientEmail)};
+  var r=old||{'Use ID':id,Code:code.Code,'Referrer Name':code['Referrer Name'],'Referrer Email':code['Referrer Email'],'Hive Inspection ID':i.id,'Client ID':String(i.clientId)};
   var check=eligible({'Referrer Email':code['Referrer Email'],'Friend Email':i.clientEmail},records('Clients'),records('Exclusions'));
   r.Eligibility=check.state;r['Hold Reason']=check.reason||'';
   r['Booked At']=i.bookedAt||'';r['Completed At']=i.completed===true&&Number.isFinite(Date.parse(i.completedAt))&&Date.parse(i.completedAt)<=Date.now()?i.completedAt:'';
@@ -71,10 +77,10 @@ function codeDispatch(action,data) {
   var all=records('CodeUses'),r=all.find(function(u){return u['Use ID']===data.useId;});if(!r)throw Error('Unknown use');
   var owner=codes.find(function(c){return c.Code===r.Code;});
   if(!owner||owner['Assignment State']!=='ASSIGNED'||owner['Hive State']!=='VERIFIED'||owner['Referrer Email']!==r['Referrer Email'])throw Error('Owner mismatch');
-  var check=eligible({'Referrer Email':r['Referrer Email'],'Friend Email':r['Client Email']},records('Clients'),records('Exclusions'));
+  var check=eligible({'Referrer Email':r['Referrer Email'],'Friend Email':''},records('Clients'),records('Exclusions'));
   if(check.state!=='ELIGIBLE'||!rewardReady(r))throw Error('Not ready');
-  if(all.some(function(u){return u['Use ID']!==r['Use ID']&&(u['Hive Inspection ID']===r['Hive Inspection ID']||u['Client ID']===r['Client ID']||email(u['Client Email'])===email(r['Client Email']))&&(u['Reward State']||u['Reward ID']);}))throw Error('Reward already reserved');
-  if(records('Referrals').some(function(u){return (u['Inspection ID']===r['Hive Inspection ID']||email(u['Friend Email'])===email(r['Client Email']))&&(u['Reward State']||u['Reward ID']);}))throw Error('Legacy reward already reserved');
+  if(all.some(function(u){return u['Use ID']!==r['Use ID']&&(u['Hive Inspection ID']===r['Hive Inspection ID']||u['Client ID']===r['Client ID'])&&(u['Reward State']||u['Reward ID']);}))throw Error('Reward already reserved');
+  if(records('Referrals').some(function(u){return (u['Inspection ID']===r['Hive Inspection ID'])&&(u['Reward State']||u['Reward ID']);}))throw Error('Legacy reward already reserved');
   r['Reward State']='RESERVED';writeRecord('CodeUses',r,'Use ID');return r;
  }
  if(action==='codeRewardSent') {
@@ -90,3 +96,5 @@ function codeDispatch(action,data) {
  }
  throw Error('Unknown code operation');
 }
+
+function codeAvailable(c){return c['Hive State']==='VERIFIED'&&c['Assignment State']==='AVAILABLE'&&!c['Referrer Email']&&!c['Referrer ID']&&Number(c['Discount Amount'])===25;}
