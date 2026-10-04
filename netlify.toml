@@ -36,3 +36,8 @@
   to = "/.netlify/functions/referral-submit"
   status = 200
   force = true
+
+[[redirects]]
+  from = "/api/referral-share"
+  to = "/.netlify/functions/referral-share"
+  status = 200
