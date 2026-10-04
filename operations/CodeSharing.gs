@@ -9,8 +9,7 @@ function codeDispatch(action,data) {
   if(data.friendEmail||data.friendName||data.channel)throw Error('Only referrer details accepted');
   var address=email(data.referrerEmail);
   if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)||!data.referrerName||data.termsVersion!=='2026-10-04-personal-share')throw Error('Invalid referrer');
-  var check=eligible({'Referrer Email':address,'Friend Email':''},records('Clients'),records('Exclusions'));
-  if(check.state!=='ELIGIBLE')return {pending:true};
+  if(data.eligibility!=='confirmed'||data.permissionAndTerms!=='accepted')throw Error('Eligibility acknowledgment required');
   var previous=shares.find(function(s){return s['Share ID']===data.shareId;});
   if(previous) {
    if(previous['Request Hash']!==data.requestHash||previous['Referrer Email']!==address)throw Error('Request changed');
@@ -25,8 +24,7 @@ function codeDispatch(action,data) {
   if(!code) {
    code=codes.find(codeAvailable);
    if(!code)throw Error('No codes available');
-   var client=records('Clients').find(function(c){return email(c.Email)===address&&c['Past Client Verified']==='YES';});
-   code['Assignment State']='ASSIGNED';code['Referrer ID']='OWNER-'+Utilities.getUuid();code['Referrer Name']=client.Name||data.referrerName;code['Referrer Email']=address;code['Assigned At']=now;
+   code['Assignment State']='ASSIGNED';code['Referrer ID']='OWNER-'+Utilities.getUuid();code['Referrer Name']=data.referrerName;code['Referrer Email']=address;code['Assigned At']=now;
    writeRecord('Codes',code,'Code');
   }
   writeRecord('Shares',{'Share ID':data.shareId,'Created At':now,Code:code.Code,'Referrer Name':code['Referrer Name'],'Referrer Email':address,Status:'CODE READY','Consent At':now,'Terms Version':data.termsVersion,'Request Hash':data.requestHash},'Share ID');
@@ -58,7 +56,7 @@ function codeDispatch(action,data) {
   var code=matches[0],id='HIVE-'+i.id,all=records('CodeUses'),old=all.find(function(u){return u['Use ID']===id;});
   if(old&&(old.Code!==code.Code||old['Client ID']!==String(i.clientId))){old['Hold Reason']='Code or client changed; review attribution';old['Reward Due At']='';writeRecord('CodeUses',old,'Use ID');return {held:true};}
   var r=old||{'Use ID':id,Code:code.Code,'Referrer Name':code['Referrer Name'],'Referrer Email':code['Referrer Email'],'Hive Inspection ID':i.id,'Client ID':String(i.clientId)};
-  var check=eligible({'Referrer Email':code['Referrer Email'],'Friend Email':i.clientEmail},records('Clients'),records('Exclusions'));
+  var check={state:'ELIGIBLE',reason:''}; // Referrer eligibility is self-attested when the code is assigned.
   r.Eligibility=check.state;r['Hold Reason']=check.reason||'';
   r['Booked At']=i.bookedAt||'';r['Completed At']=i.completed===true&&Number.isFinite(Date.parse(i.completedAt))&&Date.parse(i.completedAt)<=Date.now()?i.completedAt:'';
   r['Paid At']=i.paid===true?(r['Paid At']||now):'';
@@ -77,8 +75,7 @@ function codeDispatch(action,data) {
   var all=records('CodeUses'),r=all.find(function(u){return u['Use ID']===data.useId;});if(!r)throw Error('Unknown use');
   var owner=codes.find(function(c){return c.Code===r.Code;});
   if(!owner||owner['Assignment State']!=='ASSIGNED'||owner['Hive State']!=='VERIFIED'||owner['Referrer Email']!==r['Referrer Email'])throw Error('Owner mismatch');
-  var check=eligible({'Referrer Email':r['Referrer Email'],'Friend Email':''},records('Clients'),records('Exclusions'));
-  if(check.state!=='ELIGIBLE'||!rewardReady(r))throw Error('Not ready');
+  if(!rewardReady(r))throw Error('Not ready');
   if(all.some(function(u){return u['Use ID']!==r['Use ID']&&(u['Hive Inspection ID']===r['Hive Inspection ID']||u['Client ID']===r['Client ID'])&&(u['Reward State']||u['Reward ID']);}))throw Error('Reward already reserved');
   if(records('Referrals').some(function(u){return (u['Inspection ID']===r['Hive Inspection ID'])&&(u['Reward State']||u['Reward ID']);}))throw Error('Legacy reward already reserved');
   r['Reward State']='RESERVED';writeRecord('CodeUses',r,'Use ID');return r;

@@ -5,10 +5,10 @@ export function createShareHandler({callLedger=ledger,env=process.env}={}) {retu
  if(!['https://www.insites.services','https://insites.services',env.REFERRAL_PREVIEW_ORIGIN].filter(Boolean).includes(request.headers.get('origin')))return json({error:'Forbidden'},403);
  const raw=await request.text();if(raw.length>4096)return json({error:'Request too large'},413);
  let input;try{const parsed=JSON.parse(raw);if(parsed.company)return json({error:'Unable to process this request.'},400);input=validateShare(parsed);}catch(error){return json({error:error.message || 'Check your form details.'},400);}
- if(env.REFERRAL_CODES_ENABLED!=='true')return json({error:'We’re preparing our new referral program. Please contact Neal at 330-990-9700 for help.'},503);
+ if(env.REFERRAL_CODES_ENABLED==='false')return json({error:'We’re preparing our new referral program. Please contact Neal at 330-990-9700 for help.'},503);
  try {
   const prepared=await callLedger('prepareShare',input,env);
-  if(!prepared.code)return json({error:'We need to confirm your past-client details before sharing a code. Contact Neal at 330-990-9700.'},409);
+  if(!prepared.code)return json({error:'No referral code is available right now. Contact Neal at 330-990-9700.'},409);
   return json({ok:true,code:prepared.code},200);
  }catch{return json({error:'We couldn’t confirm your referral. Please retry with these same details, or contact Neal at 330-990-9700.'},503);}
 };}

@@ -7,6 +7,6 @@ export function validateShare(input){
  if(address.length>254||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)||/[\x00-\x1f]/.test(address))throw Error('Enter a valid email.');
  if(input.eligibility!=='confirmed'||input.permissionAndTerms!=='accepted')throw Error('Please confirm eligibility and accept the program rules.');
  if(!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(input.referralId||''))throw Error('Refresh the page and try again.');
- const out={referrerName:name.trim(),referrerEmail:address,shareId:input.referralId,termsVersion:CODE_TERMS_VERSION};
+ const out={referrerName:name.trim(),referrerEmail:address,shareId:input.referralId,termsVersion:CODE_TERMS_VERSION,eligibility:input.eligibility,permissionAndTerms:input.permissionAndTerms};
  return {...out,requestHash:createHash('sha256').update(JSON.stringify(out)).digest('hex')};
 }
