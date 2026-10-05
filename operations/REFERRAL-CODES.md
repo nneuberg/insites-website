@@ -11,3 +11,8 @@ Apps Script deployment source is Code.gs plus CodeSharing.gs. Existing endpoint 
 Hive API/webhooks and Xoxoday fulfillment remain deferred. 16 codes created in Hive, 284 pending; creation paused by user. Existing 24h post-completion/payment wait and six-month claim period unchanged. No automatic gift-card sending is running.
 
 Validation: node --test tests/referral-sharing.test.mjs. Includes repeated-code retrieval, immutable attribution, no friend-data storage, duplicate rewards, inventory filtering, threshold alert, refill rearming and idempotent retry cutoff.
+
+## Code-owner follow-up emails
+Two emails, once each per referrer email: 48 hours and six calendar months after the earliest code assignment. Returning to the form and additional owner codes do not restart the sequence. An active verified code is required. Netlify referral-followups checks every 15 minutes and sends one due email per run through the existing Resend connection, replying to neal@insites.services. Configure REFERRAL_MAILING_ADDRESS before activating sending. The Codes tab contains reservation states, provider receipts, sent timestamps and opt-out timestamp in K:S; no new tabs.
+
+Both templates include the owner's same code, InSites branding, program terms and a signed unsubscribe link. GET shows confirmation; POST persists opt-out across the email's codes and leaves code/reward eligibility intact. Provider keys remain stable on retries. Ambiguous reservations older than 23 hours become REVIEW REQUIRED instead of risking duplicate sends. Actual inbox delivery is separate from provider acceptance.

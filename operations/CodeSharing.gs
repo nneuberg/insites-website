@@ -30,6 +30,38 @@ function codeDispatch(action,data) {
   writeRecord('Shares',{'Share ID':data.shareId,'Created At':now,Code:code.Code,'Referrer Name':code['Referrer Name'],'Referrer Email':address,Status:'CODE READY','Consent At':now,'Terms Version':data.termsVersion,'Request Hash':data.requestHash},'Share ID');
   return {code:code.Code};
  }
+ if(action==='unsubscribeFollowups') {
+  var target=codes.find(function(c){return c.Code===data.code&&c['Assignment State']==='ASSIGNED';});
+  if(!target)throw Error('Unknown code');
+  codes.filter(function(c){return email(c['Referrer Email'])===email(target['Referrer Email']);}).forEach(function(c){if(!c['Email Unsubscribed At']){c['Email Unsubscribed At']=now;writeRecord('Codes',c,'Code');}});
+  return {unsubscribed:true};
+ }
+ if(action==='prepareFollowup') {
+  var seen={},candidates=codes.filter(function(c){return c['Assignment State']==='ASSIGNED'&&Number.isFinite(Date.parse(c['Assigned At']));}).sort(function(a,b){return Date.parse(a['Assigned At'])-Date.parse(b['Assigned At']);});
+  for(var c of candidates) {
+   var address=email(c['Referrer Email']);if(seen[address])continue;seen[address]=true;
+   if(c['Hive State']!=='VERIFIED'||!address||!c['Referrer ID']||codes.some(function(x){return email(x['Referrer Email'])===address&&x['Email Unsubscribed At'];}))continue;
+   for(var stage of ['2-Day','6-Month']) {
+    var due=stage==='2-Day'?Date.parse(c['Assigned At'])+2*86400000:Date.parse(plusMonths(c['Assigned At'],6));
+    if(Date.now()<due)continue;
+    var key=stage+' Email ',state=c[key+'State'];
+    if(['SENT','REVIEW REQUIRED'].includes(state))continue;
+    if(state==='RESERVED'&&(!Number.isFinite(Date.parse(c[key+'Reserved At']))||Date.now()-Date.parse(c[key+'Reserved At'])>=23*3600000)){c[key+'State']='REVIEW REQUIRED';writeRecord('Codes',c,'Code');continue;}
+    if(state&&state!=='RESERVED')continue;
+    if(!state){c[key+'State']='RESERVED';c[key+'Reserved At']=now;writeRecord('Codes',c,'Code');}
+    return {send:true,code:c.Code,name:c['Referrer Name'],email:address,stage:stage,id:c['Referrer ID']+'/'+stage};
+   }
+  }
+  return {send:false};
+ }
+ if(action==='followupSent') {
+  if(!['2-Day','6-Month'].includes(data.stage)||!data.emailId)throw Error('Invalid receipt');
+  var c=codes.find(function(c){return c.Code===data.code;}),key=data.stage+' Email ';
+  if(!c)throw Error('Unknown code');
+  if(c[key+'State']==='SENT'){if(c[key+'ID']!==data.emailId)throw Error('Receipt mismatch');return {updated:false};}
+  if(c[key+'State']!=='RESERVED')throw Error('Email not reserved');
+  c[key+'State']='SENT';c[key+'ID']=data.emailId;c[key+'Sent At']=now;writeRecord('Codes',c,'Code');return {updated:true};
+ }
  if(action==='prepareLowCodeAlert') {
   var count=codes.filter(codeAvailable).length,alerts=records('Alerts'),open=alerts.filter(function(a){return !a['Closed At'];});
   if(count>5){open.forEach(function(a){a['Closed At']=now;writeRecord('Alerts',a,'Alert ID');});return {send:false,remaining:count};}

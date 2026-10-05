@@ -76,6 +76,6 @@ function records(name){var values=table(name).getDataRange().getDisplayValues(),
 function safeCell(v){v=v==null?'':String(v);return /^[=+\-@]/.test(v)?"'"+v:v;}
 function writeRecord(name,record,key){var s=table(name),values=s.getDataRange().getDisplayValues(),headers=values[0],index=headers.indexOf(key),row=values.findIndex(function(r,i){return i>0&&r[index]===String(record[key]);});if(row<0)row=s.getLastRow();s.getRange(row+1,1,1,headers.length).setValues([headers.map(function(h){return safeCell(record[h]);})]);SpreadsheetApp.flush();}
 function dispatch(action,data){
- if(['codeSnapshot','prepareShare','prepareLowCodeAlert','lowCodeAlertSent','recordCodeUse','reserveCodeReward','codeRewardSent','codeRewardStatus'].includes(action))return codeDispatch(action,data);
+ if(['codeSnapshot','prepareShare','prepareLowCodeAlert','lowCodeAlertSent','recordCodeUse','reserveCodeReward','codeRewardSent','codeRewardStatus','prepareFollowup','followupSent','unsubscribeFollowups'].includes(action))return codeDispatch(action,data);
  throw Error('Retired or unknown operation');
 }

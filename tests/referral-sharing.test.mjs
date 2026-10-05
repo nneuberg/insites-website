@@ -39,3 +39,42 @@ test('ambiguous sends reuse the alert ID and stop retrying before provider idemp
 test('referrer form returns a code without sending or storing friend data',async()=>{const h=harness();const handler=createShareHandler({env:{REFERRAL_CODES_ENABLED:'true'},callLedger:async(a,d)=>h.call(a,d)});const req=new Request('https://www.insites.services/api/referral-share',{method:'POST',headers:{origin:'https://www.insites.services','content-type':'application/json'},body:JSON.stringify(input)});const response=await handler(req);assert.equal(response.status,200);assert.equal((await response.json()).code,'INS25ABCDEFG');assert.equal(h.tables.Shares[0]['Friend Email'],undefined);});
 
 test('current ledger needs only Codes, Shares, CodeUses and Alerts',()=>{const h=harness();delete h.tables.Clients;delete h.tables.Exclusions;h.call('prepareShare',validateShare(input));use(h);h.call('codeSnapshot',{});h.call('prepareLowCodeAlert',{});const row=h.tables.CodeUses[0];row['Paid At']=new Date(Date.now()-2*86400000).toISOString();row['Reward Due At']=new Date(Date.now()-86400000).toISOString();assert.equal(h.call('reserveCodeReward',{useId:'HIVE-one'})['Reward State'],'RESERVED');});
+
+import {followupEmail,runFollowup,unsubscribeToken,verifyUnsubscribeToken} from '../netlify/lib/referral-followups.mjs';
+import {createUnsubscribeHandler} from '../netlify/functions/referral-unsubscribe.mjs';
+function agedOwner(h,days=3){h.call('prepareShare',validateShare(input));h.tables.Codes[0]['Assigned At']=new Date(Date.now()-days*86400000).toISOString();return h.tables.Codes[0];}
+test('two-day and six-month follow-ups are separate and do not restart on another request',()=>{
+ const h=harness();h.call('prepareShare',validateShare(input));assert.equal(h.call('prepareFollowup',{}).send,false);
+ h.tables.Codes[0]['Assigned At']=new Date(Date.now()-49*3600000).toISOString();
+ const first=h.call('prepareFollowup',{});assert.equal(first.stage,'2-Day');assert.equal(h.call('prepareFollowup',{}).id,first.id);
+ h.call('followupSent',{code:first.code,stage:first.stage,emailId:'first'});assert.equal(h.call('prepareFollowup',{}).send,false);
+ h.call('prepareShare',validateShare({...input,referralId:crypto.randomUUID()}));assert.equal(h.call('prepareFollowup',{}).send,false);
+ h.tables.Codes[0]['Assigned At']=new Date(Date.now()-190*86400000).toISOString();const later=h.call('prepareFollowup',{});assert.equal(later.stage,'6-Month');
+ h.call('followupSent',{code:later.code,stage:later.stage,emailId:'later'});assert.equal(h.call('prepareFollowup',{}).send,false);
+});
+test('follow-up opt-out suppresses all codes for an email and cannot be forged',()=>{
+ const h=harness();const c=agedOwner(h);h.tables.Codes.push({...c,Code:'INS25HJKLMNP','Assigned At':new Date().toISOString()});
+ const token=unsubscribeToken(c.Code,'secret');assert.equal(verifyUnsubscribeToken(token,'secret'),c.Code);assert.equal(verifyUnsubscribeToken(token+'a','secret'),null);
+ h.call('unsubscribeFollowups',{code:c.Code});assert.ok(h.tables.Codes.every(c=>c['Email Unsubscribed At']));assert.equal(h.call('prepareFollowup',{}).send,false);
+ assert.equal(h.call('prepareShare',validateShare({...input,referralId:crypto.randomUUID()})).code,c.Code);
+});
+test('duplicate owner codes send only one follow-up; expired ambiguous receipts require review',()=>{
+ const h=harness();const c=agedOwner(h);h.tables.Codes.push({...c,Code:'INS25HJKLMNP','Assigned At':new Date(Date.now()-49*3600000).toISOString()});
+ const job=h.call('prepareFollowup',{});h.tables.Codes[0]['2-Day Email Reserved At']=new Date(Date.now()-24*3600000).toISOString();assert.equal(h.call('prepareFollowup',{}).send,false);assert.equal(h.tables.Codes[0]['2-Day Email State'],'REVIEW REQUIRED');
+});
+test('email send retries keep their ID and record one confirmed receipt',async()=>{
+ const h=harness();agedOwner(h);const ids=[];let fail=true;
+ const options={env:{RESEND_API_KEY:'test',REFERRAL_MAILING_ADDRESS:'Test address',REFERRAL_LEDGER_SECRET:'secret'},callLedger:async(a,d)=>{if(a==='followupSent'&&fail){fail=false;throw Error('Timeout');}return h.call(a,d);},sendEmail:async(m,id)=>{ids.push(id);assert.equal(m.to[0],'past@example.com');assert.match(m.headers['List-Unsubscribe'],/token=/);return 'receipt';}};
+ await assert.rejects(runFollowup(options));await runFollowup(options);assert.equal(ids[0],ids[1]);assert.equal(h.tables.Codes[0]['2-Day Email ID'],'receipt');assert.equal((await runFollowup(options)).sent,false);
+});
+test('mailing address is required before reserving a follow-up; templates escape names and reuse code',async()=>{
+ let calls=0;await assert.rejects(runFollowup({env:{},callLedger:async()=>{calls++;}}));assert.equal(calls,0);
+ for(const stage of ['2-Day','6-Month']){const mail=followupEmail({name:'<script> Test',code:'INS25ABCDEFG',stage},{address:'123 Test St',secret:'test'});assert.ok(!mail.html.includes('<script>'));assert.ok(mail.html.includes('INS25ABCDEFG'));assert.ok(mail.text.includes('123 Test St'));assert.ok(mail.subject);}
+});
+test('unsubscribe GET confirms without mutation, POST persists suppression, invalid token does not write',async()=>{
+ let calls=0;const handler=createUnsubscribeHandler({env:{REFERRAL_LEDGER_SECRET:'secret'},callLedger:async()=>{calls++;}});
+ const url='https://www.insites.services/.netlify/functions/referral-unsubscribe?token='+unsubscribeToken('INS25ABCDEFG','secret');
+ assert.equal((await handler(new Request(url))).status,200);assert.equal(calls,0);
+ assert.equal((await handler(new Request(url,{method:'POST'}))).status,200);assert.equal(calls,1);
+ assert.equal((await handler(new Request(url+'x',{method:'POST'}))).status,400);assert.equal(calls,1);
+});
