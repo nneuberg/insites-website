@@ -38,8 +38,30 @@ export async function listGallery(drive,albumId,cursor) {
   if (data.incompleteSearch) throw new GalleryError(503,'Google Drive could not finish loading the gallery. Please retry.');
   return {album:album&&{id:album.id,name:album.name},items:data.files.filter(x=>!x.name.startsWith('_')).map(x=>({id:x.id,name:x.name,createdTime:x.createdTime,imageUrl:album?`/.netlify/functions/gallery-image?album=${album.id}&photo=${x.id}`:`/.netlify/functions/gallery-image?album=${x.id}`})),nextPageToken:data.nextPageToken||null};
 }
+
+export function frontNameScore(name) {
+  if (typeof name !== 'string' || name.startsWith('_')) return 0;
+  const words=name.replace(/\.[^.]+$/,'').replace(/([a-z])([A-Z])/g,'$1 $2').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  if (!/\bfront(?:\d+)?\b/.test(words) || /\b(back|rear|interior|inside|door|porch|detail|yard|garden)\b/.test(words)) return 0;
+  if (/^front(?:\d+)?(?: \d+)*$/.test(words)) return 3;
+  if (/\b(house|home|exterior|elevation|facade|view)\b/.test(words)) return 2;
+  return 1;
+}
+export async function namedFrontCover(drive,albumId) {
+  let cursor, best, score=0;
+  for(let page=0;page<10;page++){
+    const data=await drive('files',{q:`'${albumId}' in parents and trashed = false and mimeType contains 'image/'`,fields:'nextPageToken,incompleteSearch,files(id,name,mimeType,thumbnailLink)',pageSize:'1000',pageToken:cursor,orderBy:'name_natural',supportsAllDrives:'true',includeItemsFromAllDrives:'true'});
+    if(data.incompleteSearch)throw new GalleryError(503,'Album cover search is temporarily unavailable.');
+    for(const photo of data.files||[]){const rank=frontNameScore(photo.name);if(rank>score){best=photo;score=rank;}}
+    if(!data.nextPageToken)return best;
+    cursor=data.nextPageToken;
+  }
+  throw new GalleryError(503,'Album cover search is temporarily unavailable.');
+}
+
 export async function imageMetadata(drive,albumId,photoId) {
   await checkAlbum(drive,albumId);
+  if (!photoId) { const named=await namedFrontCover(drive,albumId); if(named)return named; }
   if (photoId) {
     if (!validId(photoId)) throw new GalleryError(400,'Invalid photo.');
     const photo = await drive(`files/${photoId}`,{fields:'id,name,mimeType,parents,trashed,thumbnailLink',supportsAllDrives:'true'});
