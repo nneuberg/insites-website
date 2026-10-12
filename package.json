@@ -1,0 +1,1 @@
+{"name":"insites-website","private":true,"type":"module","dependencies":{"@netlify/blobs":"10.5.0"},"scripts":{"test:reviews":"node --test tests/review-campaign.test.mjs"}}
