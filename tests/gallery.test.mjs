@@ -1,0 +1,14 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {checkAlbum,listGallery,imageMetadata,ROOT,driveClient,connection} from '../netlify/lib/gallery-drive.mjs';
+const album='abcdefghij123',photo='photophotophoto';
+const meta={id:album,name:'House',mimeType:'application/vnd.google-apps.folder',parents:[ROOT]};
+test('rejects access to folders outside the gallery root',async()=>{await assert.rejects(checkAlbum(async()=>({...meta,parents:['elsewhere']}),album),{status:404});});
+test('rejects hidden and deleted albums',async()=>{for(const extra of [{name:'_draft'},{trashed:true}])await assert.rejects(checkAlbum(async()=>({...meta,...extra}),album),{status:404});});
+test('rejects malformed IDs before any Drive request',async()=>{let calls=0;await assert.rejects(checkAlbum(async()=>{calls++;},"' or true"),{status:400});assert.equal(calls,0);});
+test('paginates and filters hidden folders',async()=>{let params;const result=await listGallery(async(path,p)=>{params=p;return {files:[{id:album,name:'House'},{id:'hidden',name:'_hidden'}],nextPageToken:'next'};},null,'cursor');assert.equal(params.pageToken,'cursor');assert.ok(params.q.includes(ROOT));assert.equal(result.items.length,1);assert.equal(result.nextPageToken,'next');});
+test('fails incomplete searches instead of presenting partial success',async()=>{await assert.rejects(listGallery(async()=>({files:[],incompleteSearch:true})),{status:503});});
+test('prevents accessing a photo from another album',async()=>{await assert.rejects(imageMetadata(async(path,p)=>path==='files'?{files:p.q.includes(ROOT)?[{id:album}]:[]}:path.endsWith(album)?meta:{id:photo,name:'image',mimeType:'image/jpeg'},album,photo),{status:404});});
+test('accepts public metadata without parents and returns photo URLs',async()=>{const result=await listGallery(async(path,p)=>path==='files'?{files:p.q.includes(ROOT)?[{id:album}]:[{id:photo,name:'1.jpg'}]}:{...meta,parents:undefined},album);assert.equal(result.album.name,'House');assert.ok(result.items[0].imageUrl.includes(`album=${album}&photo=${photo}`));});
+test('keeps API key in server request header, not URLs',async()=>{let request;await driveClient('fixture-key',async(url,options)=>{request={url,options};return Response.json({files:[]});})('files',{q:'fixture'});assert.equal(request.options.headers['X-Goog-Api-Key'],'fixture-key');assert.ok(!request.url.href.includes('fixture-key'));});
+test('missing connection fails without trying another credential',async()=>{await assert.rejects(connection({}),{status:503});});
