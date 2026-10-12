@@ -1,0 +1,84 @@
+{
+  "updated": "2026-10-12",
+  "currency": "USD",
+  "includedPhotos": 25,
+  "extraPhotoCents": 250,
+  "galleryUrl": "/gallery/",
+  "bookingUrl": "/schedule#media-request",
+  "services": [
+    {
+      "id": "photography",
+      "name": "Interior / Exterior Photography",
+      "priceCents": 15000,
+      "description": "Interior and exterior listing photos that present the home clearly and help buyers see its spaces and features.",
+      "addons": [
+        {
+          "id": "basic",
+          "name": "Basic Aerial",
+          "priceCents": 7500,
+          "group": "aerial"
+        },
+        {
+          "id": "elevated",
+          "name": "Elevated Aerial",
+          "priceCents": 10000,
+          "group": "aerial"
+        },
+        {
+          "id": "social",
+          "name": "Social Walkthrough",
+          "priceCents": 7500
+        },
+        {
+          "id": "cinematic",
+          "name": "Cinematic Walkthrough",
+          "priceCents": 20000
+        }
+      ]
+    },
+    {
+      "id": "exterior",
+      "name": "Exterior Photography",
+      "priceCents": null,
+      "description": "Photos of the exterior that show the home and its outdoor features. Available as an add-on to another media service.",
+      "addons": [],
+      "addonPriceCents": 5000
+    },
+    {
+      "id": "basic-aerial",
+      "name": "Basic Aerial",
+      "priceCents": 12500,
+      "description": "Aerial photos that show the home, lot, and surrounding setting from above.",
+      "addons": []
+    },
+    {
+      "id": "elevated-aerial",
+      "name": "Elevated Aerial",
+      "priceCents": 15000,
+      "description": "Elevated aerial views that highlight the property and its setting.",
+      "addons": []
+    },
+    {
+      "id": "social",
+      "name": "Social Walkthrough",
+      "priceCents": 12500,
+      "description": "A walkthrough video for sharing your listing on social media.",
+      "addons": []
+    },
+    {
+      "id": "cinematic",
+      "name": "Cinematic Walkthrough",
+      "priceCents": 25000,
+      "description": "A cinematic walkthrough video that presents the home\u2019s spaces and flow.",
+      "addons": []
+    },
+    {
+      "id": "floor-plan",
+      "name": "Floor Plan",
+      "priceCents": null,
+      "addonPriceCents": 3500,
+      "description": "A digital floor plan that helps buyers understand the layout of the home. Available as an add-on to another media service.",
+      "addons": []
+    }
+  ]
+}
