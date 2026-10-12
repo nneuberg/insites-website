@@ -1,7 +1,7 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {ROOT,checkAlbum,GalleryError} from './gallery-drive.mjs';
 export const BATCH_SIZE=12;
-export const MODEL='gemini-2.5-flash-lite';
+export const MODEL='gemini-3.5-flash-lite';
 export function fingerprint(files){return createHash('sha256').update(JSON.stringify(files.map(x=>[x.id,x.name,x.modifiedTime]).sort((a,b)=>a[0].localeCompare(b[0])))).digest('hex');}
 export function chooseFront(files,ratings){
   if(!Array.isArray(ratings)||ratings.length!==files.length)throw Error('Incomplete recognition response');
@@ -62,22 +62,22 @@ export async function reserveCall(store,month,limit,maxUSD=5){
     const state={spentUSD:0,reservedUSD:0,reservations:{},...(previous?.data||{})};
     // Reserve above the model's entire 1M input context at the verified $0.10/M input rate.
     // Output is limited to 2048 tokens at $0.40/M. Unknown outcomes keep the reservation.
-    if(state.spentUSD+state.reservedUSD+0.12>maxUSD)return false;
-    const write=await store.setJSON(key,{...state,used:used+1,reservedUSD:state.reservedUSD+0.12,reservations:{...state.reservations,[reservation]:0.12}},previous?{onlyIfMatch:previous.etag}:{onlyIfNew:true});
+    if(state.spentUSD+state.reservedUSD+0.32>maxUSD)return false;
+    const write=await store.setJSON(key,{...state,used:used+1,reservedUSD:state.reservedUSD+0.32,reservations:{...state.reservations,[reservation]:0.32}},previous?{onlyIfMatch:previous.etag}:{onlyIfNew:true});
     if(write.modified)return reservation;
   }
   throw Error('Could not reserve recognition quota');
 }
 export async function settleCall(store,month,reservation,usage){
   if(!Number.isInteger(usage?.promptTokenCount)||!Number.isInteger(usage?.candidatesTokenCount))return;
-  const cost=usage.promptTokenCount*0.10/1000000+(usage.candidatesTokenCount+(usage.thoughtsTokenCount||0))*0.40/1000000;
-  if(!Number.isFinite(cost)||cost<0||cost>0.12)return;
+  const cost=usage.promptTokenCount*0.30/1000000+(usage.candidatesTokenCount+(usage.thoughtsTokenCount||0))*2.50/1000000;
+  if(!Number.isFinite(cost)||cost<0||cost>0.32)return;
   const key='usage/'+month;
   for(let i=0;i<4;i++){
     const previous=await store.getWithMetadata(key,{type:'json'});const state=previous?.data;
     if(!state?.reservations?.[reservation])return;
     const reservations={...state.reservations};delete reservations[reservation];
-    const write=await store.setJSON(key,{...state,reservations,reservedUSD:Math.max(0,state.reservedUSD-0.12),spentUSD:state.spentUSD+cost},{onlyIfMatch:previous.etag});
+    const write=await store.setJSON(key,{...state,reservations,reservedUSD:Math.max(0,state.reservedUSD-0.32),spentUSD:state.spentUSD+cost},{onlyIfMatch:previous.etag});
     if(write.modified)return;
   }
 }
