@@ -1,29 +1,12 @@
-import { createSign } from 'node:crypto';
 export const ROOT = '1SpgSvuae8ZQ8BEDYGDmr3_0lRF8R-cLs';
 const folderType = 'application/vnd.google-apps.folder';
 export class GalleryError extends Error { constructor(status, message) { super(message); this.status = status; } }
 export function validId(id) { return typeof id === 'string' && /^[A-Za-z0-9_-]{10,150}$/.test(id); }
-let cachedToken;
-async function token(env, fetcher) {
-  if (!env.GALLERY_SERVICE_ACCOUNT_EMAIL || !env.GALLERY_SERVICE_ACCOUNT_PRIVATE_KEY) throw new GalleryError(503, 'Gallery connection is being set up. Please check back shortly.');
-  if (cachedToken?.email === env.GALLERY_SERVICE_ACCOUNT_EMAIL && cachedToken.expires > Date.now()) return cachedToken.value;
-  const now = Math.floor(Date.now()/1000);
-  const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
-  const unsigned = `${encode({alg:'RS256',typ:'JWT'})}.${encode({iss:env.GALLERY_SERVICE_ACCOUNT_EMAIL,scope:'https://www.googleapis.com/auth/drive.readonly',aud:'https://oauth2.googleapis.com/token',iat:now,exp:now+3600})}`;
-  const signer = createSign('RSA-SHA256'); signer.update(unsigned);
-  const assertion = `${unsigned}.${signer.sign(env.GALLERY_SERVICE_ACCOUNT_PRIVATE_KEY.replace(/\\n/g,'\n'),'base64url')}`;
-  const response = await fetcher('https://oauth2.googleapis.com/token',{method:'POST',body:new URLSearchParams({grant_type:'urn:ietf:params:oauth:grant-type:jwt-bearer',assertion}),signal:AbortSignal.timeout(10000)});
-  if (!response.ok) throw new GalleryError(503,'Gallery connection is temporarily unavailable.');
-  const result = await response.json();
-  if (!result.access_token) throw new GalleryError(503,'Gallery connection is temporarily unavailable.');
-  cachedToken = {email:env.GALLERY_SERVICE_ACCOUNT_EMAIL,value:result.access_token,expires:Date.now()+(result.expires_in-60)*1000};
-  return result.access_token;
-}
-export function driveClient(accessToken, fetcher=fetch) {
+export function driveClient(apiKey, fetcher=fetch) {
   return async (path, params={}) => {
     const url = new URL(`https://www.googleapis.com/drive/v3/${path}`);
     for (const [key,value] of Object.entries(params)) if (value) url.searchParams.set(key,value);
-    const response = await fetcher(url,{headers:{Authorization:`Bearer ${accessToken}`},signal:AbortSignal.timeout(12000)});
+    const response = await fetcher(url,{headers:{"X-Goog-Api-Key":apiKey},signal:AbortSignal.timeout(12000)});
     if (!response.ok) throw new GalleryError(response.status===404?404:503,response.status===404?'Album or photo no longer available.':'Photos are temporarily unavailable. Please try again.');
     return response.json();
   };
@@ -56,5 +39,5 @@ export async function imageMetadata(drive,albumId,photoId) {
   if (!photo) throw new GalleryError(404,'No album cover available.');
   return photo;
 }
-export async function connection(env=process.env,fetcher=fetch) { const accessToken=await token(env,fetcher); return {accessToken,drive:driveClient(accessToken,fetcher)}; }
+export async function connection(env=process.env,fetcher=fetch) { if (!env.GALLERY_DRIVE_API_KEY) throw new GalleryError(503,'Gallery connection is being set up. Please check back shortly.'); return {drive:driveClient(env.GALLERY_DRIVE_API_KEY,fetcher)}; }
 export function errorResponse(error) { return Response.json({error:error instanceof GalleryError?error.message:'Gallery is temporarily unavailable.'},{status:error instanceof GalleryError?error.status:503,headers:{'Cache-Control':'no-store'}}); }
