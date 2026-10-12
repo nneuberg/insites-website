@@ -71,8 +71,12 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   const cutoff=Date.parse(env.REVIEW_START_AFTER||'');
   if(!Number.isFinite(cutoff)||env.REVIEW_ENABLED!=='true')return {paused:true};
   let added=0;
-  for(const person of eligibleRecipients(inspection,now())){
-   if(person.endedAt<cutoff)continue;
+  for(const original of eligibleRecipients(inspection,now())){
+   if(original.endedAt<cutoff)continue;
+   const contact=await hive('contacts/'+encodeURIComponent(original.contactId));
+   if(contact.tags?.some(t=>t.name.toLowerCase()==='google reviewed'))continue;
+   // A person linked as an agent elsewhere must never receive a client reward invitation.
+   const person={...original,role:contact.roles?.some(r=>['Buyer Agent','Seller Agent','Listing Agent','Agent'].includes(r))?'Agent':original.role};
    const identity=person.role+':'+person.email;
    await locked(identity,async()=>{
     const indexKey='people/'+hash(identity),index=await store.get(indexKey,{type:'json'});
