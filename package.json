@@ -1,0 +1,1 @@
+{"name":"insites-website","private":true,"type":"module","engines":{"node":">=22.12.0"},"dependencies":{"@netlify/blobs":"11.1.4"}}

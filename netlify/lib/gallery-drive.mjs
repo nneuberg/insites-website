@@ -62,6 +62,12 @@ export async function namedFrontCover(drive,albumId) {
 export async function imageMetadata(drive,albumId,photoId) {
   await checkAlbum(drive,albumId);
   if (!photoId) { const named=await namedFrontCover(drive,albumId); if(named)return named; }
+  if(!photoId&&process.env.GALLERY_AI_ENABLED==='true'){
+    const {getStore}=await import('@netlify/blobs');
+    const cover=await getStore({name:'gallery-front-covers',consistency:'strong'}).get('album/'+albumId,{type:'json'});
+    photoId=cover?.best?.photoId;
+    if(!photoId)throw new GalleryError(404,'No recognized front exterior available yet.');
+  }
   if (photoId) {
     if (!validId(photoId)) throw new GalleryError(400,'Invalid photo.');
     const photo = await drive(`files/${photoId}`,{fields:'id,name,mimeType,parents,trashed,thumbnailLink',supportsAllDrives:'true'});
