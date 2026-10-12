@@ -11,10 +11,22 @@ export function driveClient(apiKey, fetcher=fetch) {
     return response.json();
   };
 }
+export async function inParent(drive,parent,file) {
+  // Public Drive metadata can omit parents. Verify membership through the parent's listing.
+  const escaped=file.name.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+  let cursor;
+  for(let page=0;page<10;page++){
+    const result=await drive('files',{q:`'${parent}' in parents and trashed = false and name = '${escaped}'`,fields:'nextPageToken,files(id)',pageSize:'1000',pageToken:cursor,supportsAllDrives:'true',includeItemsFromAllDrives:'true'});
+    if(result.files?.some(row=>row.id===file.id))return true;
+    if(!result.nextPageToken)return false;
+    cursor=result.nextPageToken;
+  }
+  throw new GalleryError(503,'Folder verification is temporarily unavailable.');
+}
 export async function checkAlbum(drive,id) {
   if (!validId(id)) throw new GalleryError(400,'Invalid album.');
   const album = await drive(`files/${id}`,{fields:'id,name,mimeType,parents,trashed',supportsAllDrives:'true'});
-  if (album.trashed || album.mimeType!==folderType || !album.parents?.includes(ROOT) || album.name.startsWith('_')) throw new GalleryError(404,'Album not found.');
+  if (album.trashed || album.mimeType!==folderType || album.name.startsWith('_') || !await inParent(drive,ROOT,album)) throw new GalleryError(404,'Album not found.');
   return album;
 }
 export async function listGallery(drive,albumId,cursor) {
@@ -31,7 +43,7 @@ export async function imageMetadata(drive,albumId,photoId) {
   if (photoId) {
     if (!validId(photoId)) throw new GalleryError(400,'Invalid photo.');
     const photo = await drive(`files/${photoId}`,{fields:'id,name,mimeType,parents,trashed,thumbnailLink',supportsAllDrives:'true'});
-    if (photo.trashed || !photo.parents?.includes(albumId) || !photo.mimeType.startsWith('image/') || photo.name.startsWith('_')) throw new GalleryError(404,'Photo not found.');
+    if (photo.trashed || !photo.mimeType.startsWith('image/') || photo.name.startsWith('_') || !await inParent(drive,albumId,photo)) throw new GalleryError(404,'Photo not found.');
     return photo;
   }
   const data = await drive('files',{q:`'${albumId}' in parents and trashed = false and mimeType contains 'image/'`,fields:'nextPageToken,files(id,name,mimeType,thumbnailLink)',pageSize:'100',orderBy:'name_natural',supportsAllDrives:'true',includeItemsFromAllDrives:'true'});
