@@ -5,7 +5,7 @@ import {DAY,eligibleRecipients,referralDates,dueStage} from '../netlify/lib/revi
 import invitation from '../netlify/functions/review-invitation.mjs';
 const now=Date.parse('2026-10-12T18:00:00Z');
 const inspection={id:'inspection',confirmed:true,ends_at:'2026-10-12T12:00:00Z',price:{paid:true,amount_due:0},agreements:{all_signed:true},reports:{status:'published'},address:{full:'Test address'},contacts:[{id:'client',role:'Customer',first_name:'Alex',email:'alex@example.com'},{id:'agent',role:'Buyer Agent',first_name:'Agent',email:'agent@example.com'}]};
-function setup(){
+function setup({contactTags=[{name:'Past Client'}],contactRoles=[]}={}){
  const entries=new Map(),members=new Map(),calls=[];let seq=0,clock=now;
  const store={async get(k){return structuredClone(entries.get(k)?.data??null);},async getWithMetadata(k){return structuredClone(entries.get(k)??null);},async setJSON(k,data,o={}){const old=entries.get(k);if(o.onlyIfNew&&old||o.onlyIfMatch&&old?.etag!==o.onlyIfMatch)return {modified:false};entries.set(k,{data:structuredClone(data),etag:String(++seq)});return {modified:true};},async *list({prefix}){yield {blobs:[...entries.keys()].filter(k=>k.startsWith(prefix)).map(key=>({key}))};}};
  const fetcher=async(url,options)=>{
@@ -17,7 +17,7 @@ function setup(){
    members.set(key,member);return Response.json(member);
   }
   if(path.endsWith('/inspections'))return Response.json({data:[{id:'inspection'}],next_cursor:null});
-  if(path.includes('/contacts/'))return Response.json({tags:[{name:'Past Client'}]});
+  if(path.includes('/contacts/'))return Response.json({tags:contactTags,roles:contactRoles});
   return Response.json(inspection);
  };
  const engine=createEngine({store,fetcher,now:()=>clock,env:{HIVE_API_KEY:'mock-hive',MAILCHIMP_API_KEY:'mock-us5',REVIEW_ENABLED:'true',REVIEW_START_AFTER:'2026-10-12T00:00:00Z'}});
@@ -72,4 +72,12 @@ test('existing Mailchimp star URLs retain both token and selected rating',async(
  const token='a'.repeat(48),result=await invitation(new Request('https://www.insites.services/review/r/'+token+'?rating=4'));
  const target=new URL(result.headers.get('location'),'https://www.insites.services');assert.equal(target.searchParams.get('token'),token);assert.equal(target.searchParams.get('rating'),'4');
  assert.equal((await invitation(new Request('https://www.insites.services/review/r/invalid?rating=5'))).status,400);
+});
+test('existing Google-reviewed Hive contacts are excluded before any Mailchimp send',async()=>{
+ const {engine,calls,entries}=setup({contactTags:[{name:'google reviewed'}]});await engine.enroll(inspection);
+ assert.equal([...entries.keys()].filter(k=>k.startsWith('requests/')).length,0);assert(!calls.some(c=>c.path.includes('/members/')));
+});
+test('an agent elsewhere in Hive cannot enroll as a reward-eligible client',async()=>{
+ const {engine,entries}=setup({contactRoles:['Buyer Agent','Customer']});await engine.enroll({...inspection,contacts:[inspection.contacts[0]]});
+ const rows=[...entries.values()].filter(v=>v.data.role).map(v=>v.data);assert.equal(rows.length,1);assert.equal(rows[0].role,'Agent');
 });
