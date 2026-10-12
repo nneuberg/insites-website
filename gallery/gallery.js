@@ -10,9 +10,14 @@ function render(){
     const frame=document.createElement('div');frame.className='gallery-frame';
     const image=document.createElement('img');image.src=photoUrl(item);image.alt='';image.loading='lazy';image.decoding='async';image.onerror=()=>{image.hidden=true;};
     const fallback=document.createElement('span');fallback.className='fallback';fallback.textContent='Preview unavailable';
-    const title=document.createElement('h3');title.textContent=album?item.name.replace(/\.[^.]+$/,''):item.name;
-    const caption=document.createElement('p');caption.textContent=album?'View photograph ↗':'Explore album →';
-    frame.append(image,fallback);card.append(frame,title,caption);
+    frame.append(image,fallback);card.append(frame);
+    if(album){
+      card.setAttribute('aria-label',`Open photo ${items.indexOf(item)+1}`);
+    }else{
+      const title=document.createElement('h3');title.textContent=item.name;
+      const caption=document.createElement('p');caption.textContent='Explore album →';
+      card.append(title,caption);
+    }
     card.onclick=()=>{if(album){selected=items.indexOf(item);focusReturn=card;showPhoto();dialog.showModal();}else{items=[];cursor=null;history.pushState(null,'',`?album=${encodeURIComponent(item.id)}`);search.value='';load();}};
     grid.append(card);
   }
@@ -37,7 +42,7 @@ async function load(append=false){
   }catch(error){if(version!==requestNumber)return;status.textContent=(items.length?'Showing previously loaded results. ':'')+error.message;if(!items.length){grid.replaceChildren();const p=document.createElement('p');p.className='gallery-empty';p.textContent=error.message;grid.append(p);}}
   finally{if(version===requestNumber){busy=false;more.disabled=false;document.querySelector('#gallery-refresh').disabled=false;}}
 }
-function showPhoto(){const item=items[selected];if(!item)return;document.querySelector('#lightbox-name').textContent=item.name;const image=document.querySelector('#lightbox-image');image.alt=item.name;document.querySelector('#lightbox-error').hidden=true;image.onerror=()=>{document.querySelector('#lightbox-error').hidden=false;};image.src=photoUrl(item,true);document.querySelector('#lightbox-count').textContent=`${selected+1} / ${items.length}${cursor?' loaded':''}`;document.querySelector('#lightbox-prev').disabled=selected===0;document.querySelector('#lightbox-next').disabled=selected===items.length-1;}
+function showPhoto(){const item=items[selected];if(!item)return;document.querySelector('#lightbox-name').textContent=album.name;const image=document.querySelector('#lightbox-image');image.alt=album.name+" — Photo "+(selected+1);document.querySelector('#lightbox-error').hidden=true;image.onerror=()=>{document.querySelector('#lightbox-error').hidden=false;};image.src=photoUrl(item,true);document.querySelector('#lightbox-count').textContent=`${selected+1} / ${items.length}${cursor?' loaded':''}`;document.querySelector('#lightbox-prev').disabled=selected===0;document.querySelector('#lightbox-next').disabled=selected===items.length-1;}
 document.querySelector('#lightbox-close').onclick=()=>dialog.close();dialog.addEventListener('close',()=>focusReturn?.focus());
 document.querySelector('#lightbox-prev').onclick=()=>{if(selected>0){selected--;showPhoto();}};
 document.querySelector('#lightbox-next').onclick=()=>{if(selected<items.length-1){selected++;showPhoto();}};
