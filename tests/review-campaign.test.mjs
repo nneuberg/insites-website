@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createEngine} from '../netlify/lib/review-engine.mjs';
 import {DAY,eligibleRecipients,referralDates,dueStage} from '../netlify/lib/review-policy.mjs';
+import invitation from '../netlify/functions/review-invitation.mjs';
 const now=Date.parse('2026-10-12T18:00:00Z');
 const inspection={id:'inspection',confirmed:true,ends_at:'2026-10-12T12:00:00Z',price:{paid:true,amount_due:0},agreements:{all_signed:true},reports:{status:'published'},address:{full:'Test address'},contacts:[{id:'client',role:'Customer',first_name:'Alex',email:'alex@example.com'},{id:'agent',role:'Buyer Agent',first_name:'Agent',email:'agent@example.com'}]};
 function setup(){
@@ -66,4 +67,9 @@ test('confirmed Google review adds Hive tag without removing existing tags and p
  const patch=calls.find(c=>c.path.includes('/contacts/')&&c.method==='PATCH');assert.deepEqual(patch.body.tags,['Past Client','Google Reviewed']);
  assert(calls.some(c=>c.body?.tags?.some(t=>t.name==='google reviewed'&&t.status==='active')));
  await assert.rejects(()=>engine.confirmGoogle(rows[1].token,{reviewId:'google-1'}),/already assigned/);
+});
+test('existing Mailchimp star URLs retain both token and selected rating',async()=>{
+ const token='a'.repeat(48),result=await invitation(new Request('https://www.insites.services/review/r/'+token+'?rating=4'));
+ const target=new URL(result.headers.get('location'),'https://www.insites.services');assert.equal(target.searchParams.get('token'),token);assert.equal(target.searchParams.get('rating'),'4');
+ assert.equal((await invitation(new Request('https://www.insites.services/review/r/invalid?rating=5'))).status,400);
 });
