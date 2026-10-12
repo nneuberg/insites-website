@@ -61,7 +61,8 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   if(row.preparingStage===stage&&row.stagePrepared&&pending){row.sentStages=[...new Set([...row.sentStages,...Array.from({length:stage+1},(_,n)=>n)])];delete row.preparingStage;delete row.stagePrepared;await save(row);return;}
   row.preparingStage=stage;row.stagePrepared=false;await save(row);
   await mc(row,{tags:[{name:'REVIEW:PENDING',status:'inactive'}]},'POST','/tags');
-  await mc(row,{merge_fields:{REVLINK:ORIGIN+'/review/?token='+row.token,REVADDR:row.address}});
+  // Existing Mailchimp star links append ?rating=N, so keep REVLINK query-free.
+  await mc(row,{merge_fields:{REVLINK:ORIGIN+'/review/r/'+row.token,REVADDR:row.address}});
   row.stagePrepared=true;await save(row);
   await mc(row,{tags:[{name:'REVIEW:PENDING',status:'active'}]},'POST','/tags');
   row.sentStages=[...new Set([...row.sentStages,...Array.from({length:stage+1},(_,n)=>n)])];delete row.preparingStage;delete row.stagePrepared;await save(row);
@@ -122,7 +123,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   for await(const page of store.list({prefix:'requests/',paginate:true})){
    for(const blob of page.blobs){
     const token=blob.key.slice('requests/'.length),row=await get(token);
-    if(row.finishSynced||!row.endedAt&&now()<row.expiresAt&&dueStage(row,now())===null)continue;
+    if(row.finishSynced&&(!row.googleReviewedAt||row.hiveTagSynced)||!row.endedAt&&now()<row.expiresAt&&dueStage(row,now())===null)continue;
     if(processed>=20)return {read,processed};await process(token);processed++;
    }
   }
