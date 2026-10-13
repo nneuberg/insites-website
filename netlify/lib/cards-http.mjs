@@ -1,5 +1,6 @@
 import {authenticate,receive,readState,importHistory,stage,review,acknowledge,dispatch,reevaluate,reviewFingerprint,resolveAgentConflict,claimProjection} from './cards-core.mjs';
 import {claimDraft,submitDraft} from './cards-ai.mjs';
+import {reconcileProjection} from './cards-sheets.mjs';
 import {ownerPage,ownerScript} from './cards-ui.mjs';
 import {mappingFrom,verifyOffice,officeFingerprint,retryEvent} from './cards-worker.mjs';
 import {createHiveReader,resolveOffice,sheetProjection,sheetRow,verifySheetReadback} from './cards-adapters.mjs';
@@ -27,6 +28,7 @@ export async function handle({request,context,env=process.env,openStore,kind,rea
   }
   if(body.action==='queue'){const s=await readState(store);return reply({events:Object.values(s.events).filter(e=>e.status!=='DONE'),jobs:Object.values(s.jobs),projectionLease:s.projectionLease||null});}
   if(body.action==='history')return reply(await importHistory(store,body));
+  if(body.action==='reconcileProjection')return reply(await reconcileProjection(store,body,env));
   // Staging is owner-only pending verified automatic completion/office mapping.
   if(body.action==='stage')return reply(await stage(store,{...body,organization:env.HIVE_CARD_ORGANIZATION_ID}));
   if(body.action==='resolveAgentConflict')return reply(await resolveAgentConflict(store,{...body,organization:env.HIVE_CARD_ORGANIZATION_ID}));

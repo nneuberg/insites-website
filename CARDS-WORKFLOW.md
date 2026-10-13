@@ -123,7 +123,7 @@ hold duplicate IDs, write values as literal strings/RAW, read back record_id plu
 all expected values and revision in evidence_reference; then POST
 `{"action":"ack","jobId":"...","revision":1,"headers":["..."],"readback":["..."]}`. A failed/ambiguous write must
 look up the same record_id before retrying. Don't append blindly or acknowledge
-before readback. The bridge is delivery projection only, not a concurrency lock.
+before readback. The bridge serializes projections with a global claim and also supports bounded draft generation; it cannot approve or send.
 Do not let an ordinary edited Sheet cell grant approval. All changes to copy go
 back through the owner endpoint and invalidate prior approval.
 
@@ -169,7 +169,7 @@ https://api.card.ly/openapi/en-AU/2.2.0/json (link observed; specification not f
 
 ## Synthetic checks and deployment boundary
 
-Run `node --test tests/cards.test.mjs` (49 synthetic Node tests). Tests use an in-memory CAS store,
+Run `node --test tests/cards.test.mjs` (55 synthetic Node tests). Tests use an in-memory CAS store,
 synthetic keys/IDs/addresses and injected HTTP mocks. They exercise concurrent
 receipt/draft collisions, wrong signatures/organization, failure before ack,
 copy exhaustion, approval edits, incomplete history, permissions, provider test
@@ -196,7 +196,7 @@ new login, credential entry or account sharing is needed.
 The earlier Hive form was UNSAVED and its tab closed; no persistent automation
 was created. The preparation screenshot is evidence of a proposal only.
 
-49 Node tests validate this draft using synthetic in-memory CAS and fixture reads.
+55 Node tests validate this draft using synthetic in-memory CAS and fixture reads.
 The earlier Python scaffold separately passed 51 tests; those do not validate
 this implementation. No real SDK/Blobs concurrent-write or ambiguous-write
 integration test has run. Required before activation: authorized nonsending
@@ -253,8 +253,7 @@ Use the saved projectionToken through fetch A1:AK1000 -> planUpsert -> exact PUT
 On ambiguous write, fetch the same ID and reconcile; never blind append. Owner
 queue exposes the outstanding claim for reconciliation; after a job revision
 changes or a claim expires, acknowledgment is rejected. Such claims require
-explicit owner reconciliation; a secure recovery action remains unfinished. A lost claim requires owner reconciliation; there is
-no force-release action. No actual upsert/readback transport has run.
+explicit owner reconciliation through the narrow action below. There is no force-release action. No actual upsert/readback transport has run.
 
 User rejected prior concept PDF. Replacement branded proof is separately owned:
 [private Library ID], InSites_realtor_thank_you_brand_proof.pdf.
@@ -265,7 +264,7 @@ Acknowledgment requires an active exact job/token/revision claim with an unexpir
 five-minute deadline and a pending projection. Missing, expired, already-used and
 wrong claims reject; no idempotent-ack exception is implemented. Expiry never
 automatically frees the global write lock. Interrupted/expired or revision-changed
-claims remain safely held pending an explicit reconciliation recovery action.
+claims remain safely held until the owner reconciliation action verifies readback evidence.
 
 Private workbook ID is bound by createLedgerPlanner to HIVE_CARDS_LEDGER_WORKBOOK_ID deployment configuration, not committed or accepted from projection/request fields. The returned planUpsert accepts only values and projection.
 Account email addresses, connection IDs and private artifact IDs are omitted from
@@ -279,3 +278,59 @@ permissions or write occurred. No reconnect is necessary.
 AI context-capacity holds use the same versioned job-change helper as other
 updates: revision, updatedAt and projectionPending all change, so an already
 acknowledged ledger projection receives the new hold reason.
+
+
+## Owner-only interrupted projection recovery
+
+`reconcileProjection` is available only through the authenticated owner endpoint.
+The global claim now stores the exact original job snapshot. Before calling it,
+the owner must stop the old Zap run and establish that no old write remains in
+flight, then fetch the complete configured `Sent Cards!A1:AK1000` range using the
+existing authorized Sheets connection. Merely waiting for lease expiry is not
+sufficient. If that operational fence cannot be established, keep the lock.
+
+The action requires current job revision, exact claim token, the configured
+workbook ID, literal range `'Sent Cards'!A1:AK1000`, all returned string rows,
+`observedAt` within five minutes and after the claim, `writerStopped: true`, and
+an owner evidence description. The server validates headers and row identity;
+it does not independently fetch Google Sheets or prove the owner's attestation.
+This is an administrative recovery API, not yet a review-page button.
+
+An exact claimed row confirms the older/current write. Current confirmed writes
+clear pending; older confirmed writes and absent rows requeue the current desired
+projection. Unexpected edits or duplicate matching IDs retain the lock for manual
+review. Job revision, approval, wording and delivery status are preserved. Audit
+retains the claim snapshot, both revisions, readback fingerprint and evidence.
+Legacy claims without a saved snapshot remain locked. No automatic expiry,
+force-release, blind append or replay is introduced. All actual writes remain
+unwired and disabled.
+
+## Smallest secure connection plan (not provisioned)
+
+API by Zapier is visible in this account's Add new connection picker. Its official
+Static Headers connection stores authentication separately from ordinary Zap
+fields and supports an exact domain filter. A new dedicated connection can carry
+only the restricted bridge token for `www.insites.services`; server role checks
+remain necessary because a domain filter is not a path restriction. No connection
+was created. Existing Cardly, Sheets and ChatGPT credentials cannot authenticate
+the custom coordinator endpoint. This premium beta app requires an eligible
+Zapier plan; account-specific eligibility has not been verified beyond picker
+availability. Source: https://help.zapier.com/hc/en-us/articles/44391660158733-How-to-get-started-with-API-by-Zapier
+
+Three separate future handoffs are needed: Hive's generated signing secret into
+Netlify Functions configuration; an owner-only random token retained in the
+owner's password manager with only its SHA256 verifier in Netlify; and a distinct
+bridge token entered by the user into API by Zapier Static Headers with only its
+SHA256 verifier in Netlify. Credential generation, hashing and secure handoff
+have not been performed. User credential entry/submission and specific access
+approval are required; never ask for raw values in chat. Existing authorized
+Netlify dashboard access avoids creating a new Netlify personal token. Function
+scoping and extra secret controls depend on the site's Netlify plan and remain
+to be checked. No new provider or Google API credentials are needed.
+
+Deployment remains a separate approval. With `HIVE_CARDS_ENABLED=false`, every
+endpoint returns disabled before opening storage, including any connection test.
+No safe authentication-only GET endpoint is implemented yet. API by Zapier's
+Test URL is documented as optional; do not silently activate the coordinator to
+make a connection test pass. Receiver deployment, credential provisioning,
+synthetic runtime testing, real-data intake and card delivery are separate gates.

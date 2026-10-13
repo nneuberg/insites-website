@@ -154,6 +154,6 @@ export async function claimProjection(store,now=Date.now()){
   // the same serialized run/owner before another record can claim a row.
   if(s.projectionLease)return {unchanged:true,status:'projection_busy_reconcile_required'};
   const j=Object.values(s.jobs).find(j=>j.projectionPending);if(!j)return {unchanged:true,status:'idle'};
-  const token=randomUUID();s.projectionLease={token,jobId:j.id,revision:j.revision,at:now,until:now+300000};return {status:'claimed',token,job:structuredClone(j)};
+  const token=randomUUID();s.projectionLease={token,jobId:j.id,revision:j.revision,at:now,until:now+300000,snapshot:structuredClone(j)};return {status:'claimed',token,job:structuredClone(j)};
  });
 }
