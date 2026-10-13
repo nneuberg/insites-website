@@ -72,3 +72,5 @@
 
 .appointment-notes{font-size:13px;line-height:1.7;color:#514b41;margin:-6px 0 28px;padding-left:20px}.appointment-notes li{padding-left:3px;margin:10px 0}
 @media(max-width:650px){.appointment-notes{font-size:12px}}
+
+.address-credit{font-size:12px;line-height:1.4;font-weight:400;font-style:normal;letter-spacing:normal;color:#5e5e5e;white-space:nowrap}

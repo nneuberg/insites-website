@@ -13,9 +13,16 @@ function update() {
   const hasPrimary = selectedIds('media_service').some(id => catalog.services.find(service => service.id === id)?.priceCents !== null);
   for (const service of catalog.services.filter(service => service.priceCents === null)) {
     const input = form.querySelector(`input[value="${service.id}"]`);
-    const unavailable = !hasPrimary || (service.id === 'exterior' && selectedIds('media_service').includes('photography'));
+    const unavailable = (service.id !== 'floor-plan' && !hasPrimary) || (service.id === 'exterior' && selectedIds('media_service').includes('photography'));
     input.disabled = unavailable;
     if (unavailable) input.checked = false;
+  }
+  const pendingFloorPlan = !hasPrimary && selectedIds('media_service').includes('floor-plan');
+  submitStatus.textContent = pendingFloorPlan ? 'Floor Plan is an add-on. Choose another media service to complete your request.' : '';
+  if (pendingFloorPlan) {
+    document.querySelector('#booking-lines').textContent = 'Floor Plan — ' + money(catalog.services.find(service => service.id === 'floor-plan').addonPriceCents) + ' (add-on)';
+    document.querySelector('#booking-total').textContent = money(catalog.services.find(service => service.id === 'floor-plan').addonPriceCents);
+    submitButton.disabled = true;return;
   }
   const quote = selection();
   const lines = document.querySelector('#booking-lines');
@@ -42,6 +49,7 @@ form.addEventListener('submit',async event=>{
   if (!catalog || sending) return;
   const data = new FormData(form);
   if (data.get('company_website')) return;
+  if (submitButton.disabled) return;
   const quote = selection();
   if (!quote.lines.length) {submitStatus.textContent='Please select a service.';return;}
   if (!form.reportValidity()) return;

@@ -1,14 +1,15 @@
 const input = document.querySelector('#property-address');
 const list = document.querySelector('#address-options');
+const credit = document.querySelector('.address-credit');
 const status = document.querySelector('#address-status');
 let timer, request, generation = 0, active = -1, labels = [];
 const cache = new Map();
-function close() {list.hidden = true;input.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');active = -1;}
+function close() {list.hidden = true;credit.hidden = true;input.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');active = -1;}
 function choose(index) {if (!labels[index]) return;input.value = labels[index];generation++;clearTimeout(timer);request?.abort();close();status.textContent = '';input.dispatchEvent(new Event('change',{bubbles:true}));}
 function render(results) {
   labels = results;active = -1;list.replaceChildren();input.removeAttribute('aria-activedescendant');
   results.forEach((label,index) => {const item = document.createElement('li');item.id = `address-option-${index}`;item.role = 'option';item.setAttribute('aria-selected','false');item.textContent = label;item.addEventListener('pointerdown',event => event.preventDefault());item.addEventListener('click',()=>choose(index));list.append(item);});
-  list.hidden = !results.length;input.setAttribute('aria-expanded',String(!!results.length));
+  list.hidden = !results.length;credit.hidden = !results.length;input.setAttribute('aria-expanded',String(!!results.length));
   status.textContent = results.length ? '' : 'No matching address found. You can enter the full address manually.';
 }
 input.addEventListener('input', () => {
