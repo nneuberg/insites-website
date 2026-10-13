@@ -93,12 +93,31 @@ test('expired/missing/overlong windows touch no storage or API',async()=>{
 test('80 failed calls exhaust budget and no further GET occurs',async()=>{
  const store=new Store();let reads=0;
  const fail=async()=>{reads++;throw Error('unavailable')};
- for(let i=0;i<82;i++)await auditStep(args(store,fail));
+ for(let i=0;i<82;i++)await auditStep({...args(store,fail),now:()=>new Date(Date.parse('2026-10-13T00:00:00Z')+i*31000).toISOString()});
  assert.equal(reads,80);assert.equal(store.value.status,'attempt_budget_exhausted');
+});
+test('failed first page persists attempt and applies backoff',async()=>{
+ const store=new Store();let reads=0;const fail=async()=>{reads++;throw Error('failure')};
+ assert.equal((await auditStep(args(store,fail))).status,'read_failed_retry');
+ assert.equal(store.value.attempts,1);
+ assert.equal((await auditStep(args(store,fail))).status,'backoff_retry_later');assert.equal(reads,1);
 });
 test('in-flight crash consumes attempt; busy holds until lease expiration',async()=>{
  const store=new Store();await auditStep(args(store,async()=>page(['a'],'next',2)));
  store.value.inflightUntil='2026-10-13T00:00:30Z';
  assert.equal((await auditStep(args(store,async()=>{throw Error('no call')}))).status,'reader_busy_retry');
  assert.equal((await auditStep({...args(store,async()=>page(['b'],null,2)),now:()=> '2026-10-13T00:00:31Z'})).status,'reading');
+});
+test('excluded contact and agency details never enter stored state or hash',async()=>{
+ const store=new Store();let calls=0;
+ const read=async(resource)=>({total:1,next_cursor:null,data:[{id:'a',first_name:'A',name:'Office',email:'a@example.test',
+  agency:{id:'agency1',notes:'NESTED_SECRET'},uses_agency_address:true,roles:['Agent'],
+  tags:[{name:'broker'},{name:'UNRELATED_SECRET'}],notes:'SECRET_NOTE_'+(++calls),birthday:'SECRET_BIRTHDAY',
+  photo_url:'SECRET_PHOTO',custom_field:'SECRET_CUSTOM'}]});
+ for(let i=0;i<4;i++)await auditStep(args(store,read));
+ assert.equal(store.value.status,'complete');
+ assert.ok(!JSON.stringify(store.value).includes('SECRET'));
+ assert.deepEqual(store.value.snapshots[0].contacts.rows[0].agent_markers,['broker']);
+ assert.equal(store.value.snapshots[0].contacts.rows[0].agency_id,'agency1');
+ assert.equal(store.value.snapshots[0].agencies.rows[0].email,undefined);
 });
