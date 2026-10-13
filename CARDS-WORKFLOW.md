@@ -53,7 +53,7 @@ GET-only Hive contact/agency reader and fail-closed mapping resolver; pure Cardl
 request/evidence adapters; synthetic tests. Owner/bridge tokens are distinct;
 bridge cannot approve, import history, stage a job or order a card.
 
-Additional implementation: a gated five-minute draft worker resolves contacts and
+Additional implementation: a gated draft worker with no deployed schedule resolves contacts and
 linked agencies using reviewed mapping; requires an owner office/suppression
 attestation (expires after 30 days), reconciled history and exact stable IDs;
 and queues a draft request. The authenticated Zapier bridge claims at most three AI attempts; each valid candidate must pass deterministic exact/near-duplicate checks before review. Fixed template candidates remain only as prototype examples.
@@ -74,7 +74,7 @@ requires exact headers and readback values plus current revision. No live Sheets
 write/readback transport has been wired. This is not an end-to-end live workflow.
 
 No scheduler exists in the account because this draft is undeployed. The worker
-source declares a five-minute schedule but requires BOTH production context and
+source exports no schedule and requires BOTH production context and
 activation/worker flags before reading Hive or storage. Missing mapping fails
 closed. Flags alone cannot complete the unfinished provider/mapping work.
 
@@ -169,7 +169,7 @@ https://api.card.ly/openapi/en-AU/2.2.0/json (link observed; specification not f
 
 ## Synthetic checks and deployment boundary
 
-Run `node --test tests/cards.test.mjs` (55 synthetic Node tests). Tests use an in-memory CAS store,
+Run `node --test tests/cards.test.mjs` (58 synthetic Node tests). Tests use an in-memory CAS store,
 synthetic keys/IDs/addresses and injected HTTP mocks. They exercise concurrent
 receipt/draft collisions, wrong signatures/organization, failure before ack,
 copy exhaustion, approval edits, incomplete history, permissions, provider test
@@ -196,7 +196,7 @@ new login, credential entry or account sharing is needed.
 The earlier Hive form was UNSAVED and its tab closed; no persistent automation
 was created. The preparation screenshot is evidence of a proposal only.
 
-55 Node tests validate this draft using synthetic in-memory CAS and fixture reads.
+58 Node tests validate this draft using synthetic in-memory CAS and fixture reads.
 The earlier Python scaffold separately passed 51 tests; those do not validate
 this implementation. No real SDK/Blobs concurrent-write or ambiguous-write
 integration test has run. Required before activation: authorized nonsending
@@ -313,9 +313,7 @@ fields and supports an exact domain filter. A new dedicated connection can carry
 only the restricted bridge token for `www.insites.services`; server role checks
 remain necessary because a domain filter is not a path restriction. No connection
 was created. Existing Cardly, Sheets and ChatGPT credentials cannot authenticate
-the custom coordinator endpoint. This premium beta app requires an eligible
-Zapier plan; account-specific eligibility has not been verified beyond picker
-availability. Source: https://help.zapier.com/hc/en-us/articles/44391660158733-How-to-get-started-with-API-by-Zapier
+the custom coordinator endpoint. The account has Zapier Pro, an eligible paid plan; no upgrade is required. Source: https://help.zapier.com/hc/en-us/articles/44391660158733-How-to-get-started-with-API-by-Zapier
 
 Three separate future handoffs are needed: Hive's generated signing secret into
 Netlify Functions configuration; an owner-only random token retained in the
@@ -328,9 +326,79 @@ Netlify dashboard access avoids creating a new Netlify personal token. Function
 scoping and extra secret controls depend on the site's Netlify plan and remain
 to be checked. No new provider or Google API credentials are needed.
 
-Deployment remains a separate approval. With `HIVE_CARDS_ENABLED=false`, every
-endpoint returns disabled before opening storage, including any connection test.
-No safe authentication-only GET endpoint is implemented yet. API by Zapier's
-Test URL is documented as optional; do not silently activate the coordinator to
-make a connection test pass. Receiver deployment, credential provisioning,
+Deployment remains a separate approval. With `HIVE_CARDS_ENABLED=false`, every workflow
+operation returns disabled before opening storage. The narrowly scoped connection
+check described below is the only exception; never activate the coordinator just
+to make a connection test pass. Receiver deployment, credential provisioning,
 synthetic runtime testing, real-data intake and card delivery are separate gates.
+
+
+## Disabled installation check and user-entry checklist
+
+Proposed Test URL after approved deployment:
+`https://www.insites.services/.netlify/functions/cards-bridge?connection_check=1`.
+Only HTTPS GET on that exact bridge path/query in production can pass. It requires
+a valid dedicated bridge bearer token and a configured different owner verifier.
+It returns only fixed connection/scope/delivery-disabled metadata, with no-store
+headers. It never reads the body, opens storage, calls a provider, mutates a queue,
+returns customer data or enables intake. All other operations retain the OFF gate.
+Tests cover wrong/missing/owner credentials, equal role hashes, previews, methods,
+TLS, extra parameters, wrong paths and attempted workflow bypass.
+
+The actual API by Zapier v2.2.0 connection form was inspected without entering or
+submitting anything. Least-privilege choices for the future user handoff:
+
+1. Authentication Type: Static Headers (API key).
+2. Connection Name: InSites card draft bridge (owner-private; no sharing).
+3. Domain Filter: `www.insites.services` exactly, without wildcard or extra domains.
+   The form normalizes URL-like values to a hostname, so a path is NOT a scope.
+4. Headers: one Authorization bearer header containing only the dedicated bridge
+   token, entered by the user in the connection form. Never put the owner token,
+   Hive key or signing secret there; never use a normal Zap code/header field.
+5. Test URL: the exact connection-check URL above; no token in the URL.
+6. User completes Connect only after specific access approval. Leave the Zap OFF.
+
+Before this handoff, the user provisions two independent random credentials via
+a reviewed local/password-manager procedure and stores their SHA256 verifiers in
+Netlify's production environment configuration. The reviewed candidate helper is `python3 tools/cards-token-verifiers.py`: it
+accepts two distinct password-manager-generated tokens through confirmed hidden
+terminal prompts, refuses noninteractive/echoed input and command arguments,
+and emits only SHA256 verifiers. It creates no token, file or network request.
+The helper is excluded from site publishing and has not handled real credentials.
+Do not substitute an online hash website, chat, logs, command-line arguments or
+a public file. The user must approve and perform this local handoff themselves. The user completes secret
+entry/submission directly. Hive signing-secret generation and storage remain a
+separate later handoff and are unnecessary for the connection-only smoke test.
+The owner token authorizes review and recovery; the bridge token authorizes
+bounded generation and ledger projection only. No OAuth scope list applies to
+Static Headers; server authorization enforces these operation limits.
+
+## Bounded deployment proposal — still requires approval
+
+Use the existing site/domain only. Review the exact PR commit and reconcile main
+before any merge; retain the current skip-build guard until a single approved
+production deployment is ready. Set activation and worker flags false first;
+provision only the two role verifiers needed for connection checking. Do not
+create a Hive automation, provider webhook, scheduler or live card action.
+No recurring worker schedule is exported, avoiding idle scheduled invocations.
+
+Plan one production deployment and at most ten nonsending smoke-check requests,
+then stop and report. Verify ordinary site health, disabled intake/control/bridge
+operations, and the authenticated connection check. Do not run the full Zap,
+write customer rows, call AI, test Cardly, or retry deployments automatically.
+If a check fails, stop for diagnosis; a second deploy needs a revised budget.
+Rollback means restore the prior known-good deployment under explicit approval.
+Do not merge the unrelated contact-audit draft as part of this installation.
+
+Current published credit rates: production deploy 15 credits, compute 10 credits
+per GB-hour, requests 2 credits per 10,000, bandwidth 20 credits per GB. Reserve
+roughly16credits for this one-deploy/small-smoke-test proposal; this is an estimate,
+not a billing cap, and ordinary site traffic is separate. Confirm remaining
+account credits immediately before approval. Do not purchase credits, upgrade or
+change auto recharge. Official rates: https://www.netlify.com/pricing/ .
+
+Existing Zapier Pro includes API by Zapier; future successful actions consume the
+existing plan's tasks. Current balances and overage settings are recorded only in
+the private operations handoff. Disabled preparation does not authorize paid
+workflow runs. Real-data intake, Sheet write/readback integration, actual card
+proof/cost approval and sending remain later separately approved work.

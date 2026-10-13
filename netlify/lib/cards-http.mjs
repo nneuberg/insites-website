@@ -6,7 +6,17 @@ import {mappingFrom,verifyOffice,officeFingerprint,retryEvent} from './cards-wor
 import {createHiveReader,resolveOffice,sheetProjection,sheetRow,verifySheetReadback} from './cards-adapters.mjs';
 export const reply=(body,status=200)=>Response.json(body,{status,headers:{'Cache-Control':'no-store','X-Robots-Tag':'noindex, nofollow','Referrer-Policy':'no-referrer'}});
 export async function handle({request,context,env=process.env,openStore,kind,read}){
- // Gate before reading secrets, opening storage, or provider calls. No env-only live-send escape.
+ // Exact bridge-only auth probe: no body, store, customer data or provider calls.
+ // It remains usable while workflow activation is OFF; previews remain blocked.
+ const url=new URL(request.url);
+ if(kind==='bridge'&&url.pathname==='/.netlify/functions/cards-bridge'&&url.search==='?connection_check=1'){
+  if(context?.deploy?.context!=='production')return reply({status:'disabled'},503);
+  if(url.protocol!=='https:'||request.method!=='GET')return reply({status:'method_or_tls_rejected'},405);
+  if(!/^[a-f0-9]{64}$/.test(env.HIVE_CARDS_OWNER_TOKEN_SHA256||'')||env.HIVE_CARDS_OWNER_TOKEN_SHA256===env.HIVE_CARDS_BRIDGE_TOKEN_SHA256)return reply({status:'role_configuration_rejected'},503);
+  if(!authenticate(request.headers.get('authorization'),env.HIVE_CARDS_BRIDGE_TOKEN_SHA256))return reply({status:'unauthorized'},401);
+  return reply({status:'connection_verified',scope:'cards_bridge',deliveryEnabled:false});
+ }
+ // All workflow operations gate before storage or provider calls. No live-send escape.
  if(context?.deploy?.context!=='production'||env.HIVE_CARDS_ENABLED!=='true')return reply({status:'disabled'},503);
  if(env.HIVE_CARDS_OWNER_TOKEN_SHA256&&env.HIVE_CARDS_OWNER_TOKEN_SHA256===env.HIVE_CARDS_BRIDGE_TOKEN_SHA256)return reply({status:'role_configuration_rejected'},503);
  if(kind==='control'&&request.method==='GET'&&new URL(request.url).protocol==='https:')return new URL(request.url).searchParams.get('asset')==='review'?ownerScript():ownerPage();

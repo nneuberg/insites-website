@@ -9,6 +9,6 @@ export default async(_request,context)=>{
   console.log('Card draft worker',JSON.stringify({status:result.status}));
  }catch{console.error('Card draft worker held; review configuration/storage.');}
 };
-// Infrastructure schedule remains absent until an explicitly approved deployment.
+// No schedule is exported: even a disabled installation must not create recurring
+// invocations/compute. Add a schedule only in a separately approved activation.
 // Separate flags remain OFF, and this worker has no Cardly transport.
-export const config={schedule:'*/5 * * * *'};
