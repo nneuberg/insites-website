@@ -79,6 +79,15 @@ function codeDispatch(action,data) {
   if(alert.Status!=='RESERVED')throw Error('Alert not reserved');
   alert.Status='SENT';alert['Email ID']=data.emailId;alert['Sent At']=now;writeRecord('Alerts',alert,'Alert ID');return {updated:true};
  }
+ if(action==='holdCodeUse') {
+  if(!/^[-a-zA-Z0-9]+$/.test(data.inspectionId||'')||typeof data.reason!=='string'||!data.reason||data.reason.length>200)throw Error('Hold evidence required');
+  var held=records('CodeUses').find(function(u){return u['Hive Inspection ID']===data.inspectionId;});
+  if(!held)return {held:false};
+  // Attribution changes stay held even if a later event restores the old code/client.
+  if(!String(held['Hold Reason']||'').startsWith('Attribution changed;'))held['Hold Reason']=(data.attributionChanged===true?'Attribution changed; ':'')+data.reason;
+  held['Reward Due At']='';held['Last Verified At']=now;
+  writeRecord('CodeUses',held,'Use ID');return {held:true};
+ }
  if(action==='recordCodeUse') {
   // Called only after authenticated Hive fetch. Unknown provider fields must remain unknown.
   var i=data.inspection;
@@ -86,7 +95,7 @@ function codeDispatch(action,data) {
   var matches=codes.filter(function(c){return i.codes.includes(c.Code)&&c['Assignment State']==='ASSIGNED'&&c['Hive State']==='VERIFIED';});
   if(matches.length!==1)return {matched:false};
   var code=matches[0],id='HIVE-'+i.id,all=records('CodeUses'),old=all.find(function(u){return u['Use ID']===id;});
-  if(old&&(old.Code!==code.Code||old['Client ID']!==String(i.clientId))){old['Hold Reason']='Code or client changed; review attribution';old['Reward Due At']='';writeRecord('CodeUses',old,'Use ID');return {held:true};}
+  if(old&&(String(old['Hold Reason']||'').startsWith('Attribution changed;')||old.Code!==code.Code||old['Client ID']!==String(i.clientId)||email(old['Referrer Email'])!==email(code['Referrer Email']))){old['Hold Reason']='Attribution changed; review code, client, or owner';old['Reward Due At']='';writeRecord('CodeUses',old,'Use ID');return {held:true};}
   var r=old||{'Use ID':id,Code:code.Code,'Referrer Name':code['Referrer Name'],'Referrer Email':code['Referrer Email'],'Hive Inspection ID':i.id,'Client ID':String(i.clientId)};
   var check={state:'ELIGIBLE',reason:''}; // Referrer eligibility is self-attested when the code is assigned.
   r.Eligibility=check.state;r['Hold Reason']=check.reason||'';
@@ -94,11 +103,12 @@ function codeDispatch(action,data) {
   r['Paid At']=i.paid===true?(r['Paid At']||now):'';
   r['Service Verified']=i.fullInspection===true?'YES':'UNKNOWN';r['New Client Verified']=i.newClient===true?'YES':'UNKNOWN';
   r['Dispute Or Refund']=i.refunded===true||i.disputed===true?'YES':i.refunded===false&&i.disputed===false?'NO':'UNKNOWN';
-  if(email(i.clientEmail)===code['Referrer Email'])r['Hold Reason']='Self referral';
-  if(!i.bookedAt||!Number.isFinite(Date.parse(i.bookedAt))||Date.parse(i.bookedAt)<=Date.parse(code['Assigned At']))r['Hold Reason']='Code must be assigned before booking';
+  if(email(i.clientEmail)===email(code['Referrer Email']))r['Hold Reason']='Self referral';
+  if(!i.bookedAt||!Number.isFinite(Date.parse(i.bookedAt))||!Number.isFinite(Date.parse(code['Assigned At']))||Date.parse(i.bookedAt)<=Date.parse(code['Assigned At']))r['Hold Reason']='Code must be assigned before booking';
   if(i.canceled!==false)r['Hold Reason']='Cancellation state not cleared';
   if(r['Service Verified']!=='YES'||r['New Client Verified']!=='YES'||r['Dispute Or Refund']!=='NO')r['Hold Reason']='Eligibility facts need verification';
-  r['Reward Due At']=r['Paid At']&&r['Completed At']?new Date(Math.max(Date.parse(r['Paid At']),Date.parse(r['Completed At']))+86400000).toISOString():'';
+  if(!r['Completed At']&&!r['Hold Reason'])r['Hold Reason']='Actual inspection completion needs verification';
+  r['Reward Due At']=!r['Hold Reason']&&r['Paid At']&&r['Completed At']?new Date(Math.max(Date.parse(r['Paid At']),Date.parse(r['Completed At']))+86400000).toISOString():'';
   r['Last Verified At']=now;r['Last Event ID']=data.eventId||'';r.Notes=data.evidence;
   if(!['REWARD SENT','REDEEMED','EXPIRED'].includes(r.Status))r.Status=r['Paid At']&&r['Completed At']?'PAID':r['Completed At']?'COMPLETED':'BOOKED';
   writeRecord('CodeUses',r,'Use ID');return {matched:true,useId:id};
