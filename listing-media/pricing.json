@@ -31,7 +31,7 @@
         },
         {
           "id": "cinematic",
-          "name": "Cinematic Walkthrough",
+          "name": "Cinematic Showcase",
           "priceCents": 20000
         }
       ]
@@ -55,22 +55,64 @@
       "id": "elevated-aerial",
       "name": "Elevated Aerial",
       "priceCents": 15000,
-      "description": "Elevated aerial views that highlight the property and its setting.",
-      "addons": []
+      "description": "Property-line overlays and saturation masks help the lot stand out clearly from the surrounding area.",
+      "addons": [],
+      "examples": [
+        {
+          "type": "image",
+          "src": "https://www.insites.services/.netlify/functions/gallery-image?album=1yUW5lrNTQPe23pYOmK-T6MZPTSW3AyLD&photo=1ZEIQraK_K3s11QW-N52ceAyeYT_0IFCF&large=1",
+          "caption": "16920 Heiser Rd",
+          "alt": "Elevated aerial of 16920 Heiser Rd with property-line overlays and saturation masking."
+        },
+        {
+          "type": "image",
+          "src": "https://www.insites.services/.netlify/functions/gallery-image?album=1I5nBQ_IG4Q2Rt-svi5i3I98i1D4DXUxM&photo=1vTvTkpXH4l-bI7SdAisw4wATyjxCIesR&large=1",
+          "caption": "324 Parkway Blvd",
+          "alt": "Elevated aerial of 324 Parkway Blvd with property-line overlays and saturation masking."
+        },
+        {
+          "type": "image",
+          "src": "https://www.insites.services/.netlify/functions/gallery-image?album=1UfUbIVkuEB2N6_gjbPUK89aVjy_fmkAn&photo=1-eHdY69H5WZK29mm2uXszvoJCF7-95EZ&large=1",
+          "caption": "620 Forestridge Dr",
+          "alt": "Elevated aerial of 620 Forestridge Dr with property-line overlays and saturation masking."
+        },
+        {
+          "type": "image",
+          "src": "https://www.insites.services/.netlify/functions/gallery-image?album=1JiXVcLcXegm_EW3DQq7TrpwPtQAucsPi&photo=1w7axW008-6jybqSzJ4G-BE7DfBdNeuCu&large=1",
+          "caption": "8631 Knauf Rd",
+          "alt": "Elevated aerial of 8631 Knauf Rd with property-line overlays and saturation masking."
+        }
+      ],
+      "emphasis": "Property-line overlays and saturation masks"
     },
     {
       "id": "social",
       "name": "Social Walkthrough",
       "priceCents": 12500,
       "description": "A walkthrough video for sharing your listing on social media.",
-      "addons": []
+      "addons": [],
+      "examples": [
+        {
+          "type": "video",
+          "src": "/examples/social-walkthrough-example.mp4",
+          "poster": "/examples/social-walkthrough-poster.jpg",
+          "caption": "Social Walkthrough example"
+        }
+      ]
     },
     {
       "id": "cinematic",
-      "name": "Cinematic Walkthrough",
+      "name": "Cinematic Showcase",
       "priceCents": 25000,
-      "description": "A cinematic walkthrough video that presents the home\u2019s spaces and flow.",
-      "addons": []
+      "description": "A cinematic showcase video that brings the home\u2019s spaces, features, and setting together in a polished presentation.",
+      "addons": [],
+      "examples": [
+        {
+          "type": "embed",
+          "src": "https://drive.google.com/file/d/1MO4ze_AJ8T79EFElFdu2QmfE4Ylz6aGr/preview",
+          "caption": "Cinematic Showcase example"
+        }
+      ]
     },
     {
       "id": "floor-plan",

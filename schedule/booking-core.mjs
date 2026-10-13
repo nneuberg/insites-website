@@ -20,15 +20,15 @@ export function calculateSelection(catalog, selectedIds) {
 export function buildBookingPayload(catalog, selection, values) {
   const money = cents => '$' + (cents / 100).toFixed(2);
   const serviceLines = selection.lines.map(line => `${line.name}: ${money(line.priceCents)}${line.addonTo ? ` (add-on to ${line.addonTo})` : ' (standalone)'}`);
-  const extra = selection.hasPhotography ? `Photography includes up to ${catalog.includedPhotos} photos; additional photos are ${money(catalog.extraPhotoCents)} each. I determine the required photo count.` : '';
+  const extra = selection.hasPhotography ? `Photography includes up to ${catalog.includedPhotos} photos; additional photos are ${money(catalog.extraPhotoCents)} each. The photo count is tailored to what is needed to portray the home.` : '';
   return {
     _subject:`New listing media request — ${values.property_address}`,
     _template:'table',
     name:values.realtor_name,email:values.email,phone:values.phone,brokerage:values.brokerage || 'Not provided',
-    property_address:values.property_address,square_footage:values.square_footage || 'Not provided',
+    property_address:values.property_address,
     requested_services:serviceLines.join('\n'),
     priced_services_total:selection.lines.length ? money(selection.totalCents) : 'Quote required',
     pricing_notes:[extra,'Booking request; availability and final price require confirmation.'].filter(Boolean).join(' '),
-    preferred_date:values.preferred_date || 'No specific date',date_flexibility:values.date_flexibility,notes:values.notes || 'None provided',
+    preferred_time:values.preferred_time || 'Not provided',preferred_date:values.preferred_date || 'No specific date',date_flexibility:values.date_flexibility,notes:values.notes || 'None provided',
   };
 }

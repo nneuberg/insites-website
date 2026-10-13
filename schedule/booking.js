@@ -1,3 +1,4 @@
+import './address-autocomplete.js';
 import {calculateSelection, buildBookingPayload} from './booking-core.mjs';
 const form = document.querySelector('#media-booking-form');
 const submitButton = document.querySelector('#booking-submit');
@@ -12,9 +13,18 @@ function update() {
   const hasPrimary = selectedIds('media_service').some(id => catalog.services.find(service => service.id === id)?.priceCents !== null);
   for (const service of catalog.services.filter(service => service.priceCents === null)) {
     const input = form.querySelector(`input[value="${service.id}"]`);
-    const unavailable = !hasPrimary || (service.id === 'exterior' && selectedIds('media_service').includes('photography'));
+    const unavailable = (service.id === 'exterior' && selectedIds('media_service').includes('photography'));
     input.disabled = unavailable;
     if (unavailable) input.checked = false;
+  }
+  const pendingAddons = !hasPrimary && selectedIds('media_service').length > 0;
+  submitStatus.textContent = pendingAddons ? 'These are add-on services. Choose another media service to complete your request.' : '';
+  if (pendingAddons) {
+    const selected = catalog.services.filter(service => selectedIds('media_service').includes(service.id));
+    const lines = document.querySelector('#booking-lines');lines.replaceChildren();
+    selected.forEach(service => {const p = document.createElement('p');p.textContent = service.name + ' — ' + money(service.addonPriceCents) + ' (add-on)';lines.append(p);});
+    document.querySelector('#booking-total').textContent = money(selected.reduce((sum,service)=>sum+service.addonPriceCents,0));
+    submitButton.disabled = true;return;
   }
   const quote = selection();
   const lines = document.querySelector('#booking-lines');
@@ -26,9 +36,6 @@ function update() {
     lines.append(p);
   }
   document.querySelector('#booking-total').textContent = quote.lines.length ? money(quote.totalCents) : '—';
-  const extra = document.querySelector('#booking-extra-note');
-  extra.hidden = !quote.hasPhotography;
-  extra.textContent = `Plus ${money(catalog.extraPhotoCents)} for each photo beyond ${catalog.includedPhotos}. I determine the number needed.`;
   submitButton.disabled = sending || !quote.lines.length;
 }
 form.addEventListener('change',event=>{
@@ -44,6 +51,7 @@ form.addEventListener('submit',async event=>{
   if (!catalog || sending) return;
   const data = new FormData(form);
   if (data.get('company_website')) return;
+  if (submitButton.disabled) return;
   const quote = selection();
   if (!quote.lines.length) {submitStatus.textContent='Please select a service.';return;}
   if (!form.reportValidity()) return;
