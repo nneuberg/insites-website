@@ -28,7 +28,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  }
  async function finish(row){
   await mc(row,{tags:[{name:'REVIEW:PENDING',status:'inactive'},...(row.ratedAt?[{name:'feedback received',status:'active'}]:[]),...(row.googleReviewedAt?[{name:'google reviewed',status:'active'}]:[])]},'POST','/tags');
-  if(row.role==='Customer')await mc(row,{merge_fields:referralDates(row.endedAt)});
+  if(row.role==='Customer'&&!row.isTest)await mc(row,{merge_fields:referralDates(row.endedAt)});
   row.finishSynced=true;await save(row);
  }
  async function syncHiveTag(row){
@@ -39,7 +39,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  }
  async function confirmGoogle(token,review){
   if(!validToken(token)||!review?.reviewId)throw Error('Invalid match');
-  const first=await get(token);if(!first)throw Error('Review request not found');
+  const first=await get(token);if(!first||first.isTest)throw Error('Review request not found');
   return locked('google:'+review.reviewId,()=>locked(first.role+':'+first.email,async()=>{
    const row=await get(token),claimKey='confirmed/'+hash(review.reviewId),claim=await store.get(claimKey,{type:'json'});
    if(claim&&claim.token!==token)throw Error('This Google review is already assigned to another person');
@@ -99,6 +99,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
    const row=await get(token);
    if(row.endedAt){if(!row.finishSynced&&!row.suppressed)await finish(row);if(row.googleReviewedAt&&!row.hiveTagSynced)await syncHiveTag(row);return;}
    if(now()>=row.expiresAt){row.endedAt=row.expiresAt;await save(row);await finish(row);return;}
+   if(row.isTest)return;
    const stage=dueStage(row,now());if(stage!==null&&stage>=0)await send(row,stage);
   });
  }
