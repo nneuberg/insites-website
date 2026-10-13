@@ -68,8 +68,11 @@ export async function auditStep({store,read,env=process.env,context='local',now=
  if(!/^[a-zA-Z0-9_-]{8,64}$/.test(run||''))return {status:'configuration_required'};
  const key='runs/'+run;
  const saved=await store.getWithMetadata(key,{type:'json'});
- const state=saved?structuredClone(saved.data):{schema:1,run,status:'reading',startedAt:now(),attempts:0,pass:0,resource:0,current:empty(),snapshots:[{},{}]};
+ const approvedWindow={notBefore:Date.parse(env.HIVE_CONTACT_AUDIT_NOT_BEFORE),expiresAt:Date.parse(env.HIVE_CONTACT_AUDIT_EXPIRES_AT)};
+ const state=saved?structuredClone(saved.data):{schema:1,run,status:'reading',approvedWindow,startedAt:now(),attempts:0,pass:0,resource:0,current:empty(),snapshots:[{},{}]};
  if(state.schema!==1||state.run!==run)return {status:'invalid_state_hold'};
+ if(!state.approvedWindow||state.approvedWindow.notBefore!==approvedWindow.notBefore||
+    state.approvedWindow.expiresAt!==approvedWindow.expiresAt)return {status:'changed_window_hold'};
  if(state.status!=='reading')return {status:state.status,counts:state.counts||null};
  // Persist reservation BEFORE the GET. Crashes and failed reads consume budget.
  // CAS fences concurrent callers; only the successful claimant may fetch.
@@ -83,6 +86,8 @@ export async function auditStep({store,read,env=process.env,context='local',now=
  if(!reservation.modified)return {status:'concurrent_reader_retry'};
  const owned=await store.getWithMetadata(key,{type:'json'});
  if(!owned||owned.data.attempts!==state.attempts||owned.data.inflightUntil!==state.inflightUntil)return {status:'concurrent_reader_retry'};
+ // Storage may consume the remaining window. Never initiate a GET after expiry.
+ if(!auditWindow(env,now)||Date.parse(now())>=state.approvedWindow.expiresAt)return {status:'outside_audit_window'};
  const resource=resources[state.resource];
  let page;
  try{page=await read(resource,state.current.cursor);}catch{
