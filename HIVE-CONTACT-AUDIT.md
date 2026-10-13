@@ -10,7 +10,7 @@ commit also uses `[skip netlify]`. No credentials are included or newly created.
 
 ## Approved activation only
 
-1. Review this draft and run `node --test tests/hive-contact-audit.test.mjs` (24 tests).
+1. Review this draft and run `node --test tests/hive-contact-audit.test.mjs` (26 tests).
 2. Obtain approval to deploy this read-only function and store the private snapshot
    in the same Netlify project. Remove the draft build-ignore guard only then.
 3. Keep existing `HIVE_API_KEY` in production Functions scope; never reveal/copy it.
@@ -36,9 +36,12 @@ commit also uses `[skip netlify]`. No credentials are included or newly created.
    unique-ID/total/cursor checks. This is not an atomic database snapshot. Re-read
    records before any reconciliation and never treat a later missing record alone
    as deletion permission. On `changed_between_passes_hold` or
-   `invalid_snapshot_hold`, investigate and use a new approved run ID.
+   `invalid_snapshot_hold`, investigate and use a new approved run ID and window. Each run permanently pins its original window;
+   changing environment timestamps cannot resume the same run ID on a later day.
+   Time is checked again immediately before every Hive GET after storage work.
 8. On success, budget exhaustion, failure hold, or expiry, stop invoking Run now
-   and execute the approved follow-up deployment that removes the audit function.
+   and execute the approved cleanup that removes the audit function (verified isolated
+   rollback or a removal deployment).
    Also reset the audit flag in project settings to prevent accidental future reuse.
    Changing the environment flag alone is NOT an immediate kill switch: a new
    deployment is required. Removal eliminates the dormant annual trigger entirely.
@@ -91,13 +94,27 @@ non-agent identities; they must never all be added to the Agents tab.
 
 ## Removal and deployment cost
 
-The infrastructure schedule remains annual until the function is removed. Approval
-should cover the initial deploy AND a follow-up removal deploy after success, hold
-or expiry. A flag edit alone cannot disable the deployed function. Remove it when
-the audit is finished, preferably bundled with an already-approved production deployment. At
-the reported account rate of 15 credits per production deploy, two dedicated
-deploys would consume 30 credits; confirm current billing before execution. Do not
-claim a truly one-time infrastructure schedule or leave the annual trigger hidden.
+The infrastructure schedule remains annual until effective cleanup is verified.
+Approval should cover initial deployment and cleanup after success, hold or expiry.
+A flag edit alone cannot disable the already-deployed function.
+
+If the audit deploy is isolated and no unrelated production deployment has happened
+since, consider restoring the immediately preceding production deploy. Netlify's
+credit FAQ says rollback costs zero credits. Before choosing this path, verify that
+rollback restores the pre-audit function set AND removes the audit schedule; do not
+assume it. Record the exact preceding deploy ID. Never roll back unrelated changes.
+Source removal must also be included in the next approved release to prevent the
+audit function from returning. If these checks cannot be satisfied, remove the
+function through a normal approved deployment, preferably bundled with other
+approved work.
+
+At the account's reported rate, the initial production deployment costs 15 credits;
+a separate new-build removal deployment would cost another 15, but that second
+charge is not unavoidable if verified rollback is suitable. Confirm current billing
+and rollback semantics before execution. The fallback absolute deadline stops
+Blob/API work even while cleanup is pending. Never call this a true one-time
+infrastructure schedule or hide the remaining annual trigger.
+Billing source: https://docs.netlify.com/manage/accounts-and-billing/billing/billing-for-credit-based-plans/billing-faq-for-credit-based-plans/
 
 Documented agent roles are `Buyer Agent` and `Listing Agent`. Unknown roles such as
 `Agent` or `Seller Agent` remain verbatim for review, never silently discarded or
