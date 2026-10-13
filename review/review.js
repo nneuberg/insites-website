@@ -1,6 +1,6 @@
 const params=new URLSearchParams(location.search),preview=params.get('preview')==='1',token=params.get('token');
 const el=id=>document.getElementById(id),form=el('feedback-form');
-const thanks=()=>{form.hidden=true;el('thanks').hidden=false;el('intro').hidden=true;};
+const thanks=()=>{form.hidden=true;for(const id of ['review-eyebrow','review-heading','address','intro']){const item=el(id);if(item)item.hidden=true;}el('thanks').hidden=false;};
 async function start(){
  try{
   let details;if(preview){details={name:'Alex',address:'Your inspection address'};el('preview-note').hidden=false;}
