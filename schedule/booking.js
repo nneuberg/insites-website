@@ -1,3 +1,4 @@
+import './address-autocomplete.js';
 import {calculateSelection, buildBookingPayload} from './booking-core.mjs';
 const form = document.querySelector('#media-booking-form');
 const submitButton = document.querySelector('#booking-submit');
@@ -28,7 +29,7 @@ function update() {
   document.querySelector('#booking-total').textContent = quote.lines.length ? money(quote.totalCents) : '—';
   const extra = document.querySelector('#booking-extra-note');
   extra.hidden = !quote.hasPhotography;
-  extra.textContent = `Plus ${money(catalog.extraPhotoCents)} for each photo beyond ${catalog.includedPhotos}. I determine the number needed.`;
+  extra.textContent = `Plus ${money(catalog.extraPhotoCents)} for each photo beyond ${catalog.includedPhotos}. Additional-photo charges are based on the final photo count.`;
   submitButton.disabled = sending || !quote.lines.length;
 }
 form.addEventListener('change',event=>{
