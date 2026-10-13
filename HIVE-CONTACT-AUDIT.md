@@ -10,7 +10,7 @@ commit also uses `[skip netlify]`. No credentials are included or newly created.
 
 ## Approved activation only
 
-1. Review this draft and run `node --test tests/hive-contact-audit.test.mjs` (17 tests).
+1. Review this draft and run `node --test tests/hive-contact-audit.test.mjs` (19 tests).
 2. Obtain approval to deploy this read-only function and store the private snapshot
    in the same Netlify project. Remove the draft build-ignore guard only then.
 3. Keep existing `HIVE_API_KEY` in production Functions scope; never reveal/copy it.
@@ -21,7 +21,7 @@ commit also uses `[skip netlify]`. No credentials are included or newly created.
    handler returns BEFORE any Blob or API access. Use Functions > Run now manually
    for each page; 2710 contacts and 170 agencies require approximately 30 successful
    invocations for two passes. Each run ID has a hard 80-attempt budget including
-   API failures and crashes. Preview runs are gated.
+   API failures and crashes. Failed reads back off 5/10/20/30 seconds. Preview runs are gated.
    Netlify Run now requires a scheduled function: `@yearly` is the dormant platform
    trigger, NOT a true one-time schedule. No minute polling remains. An annual tick
    outside the short window does no storage/API work. If the window includes Jan 1
@@ -68,3 +68,25 @@ review, native same-workbook backup including notes, immutable IDs, verified col
 mapping, durable three-way baselines, loop suppression, conflict/outbox recovery,
 association/address protections, and explicit activation approval. Do not prune
 Brokerages or touch Sent Cards. Agency writes remain manual in Hive.
+
+## Data minimization
+
+All contacts are enumerated so roleless agents cannot be mistaken as absent. Only
+an explicit reconciliation projection is stored and hashed: immutable ID, relevant
+names, email, phone, agency ID/follow-address flag, address components, update time,
+known roles and exact agent/broker classification tags. Agency rows retain ID,
+name, phone, address components and update time. Nested agency data contributes its
+ID only. Birthdays, freeform notes, unrelated tags/custom fields and expiring photo
+URLs are never persisted or included in hashes/logs. Changes only to excluded
+fields do not invalidate the reconciliation projection. Enumeration includes
+non-agent identities; they must never all be added to the Agents tab.
+
+## Removal and deployment cost
+
+The infrastructure schedule remains annual until the function is removed. Approval
+should cover the initial deploy AND a follow-up removal deploy after success, hold
+or expiry. Disable the flag immediately; remove the function when the audit is
+finished, preferably bundled with an already-approved production deployment. At
+the reported account rate of 15 credits per production deploy, two dedicated
+deploys would consume 30 credits; confirm current billing before execution. Do not
+claim a truly one-time infrastructure schedule or leave the annual trigger hidden.
