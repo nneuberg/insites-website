@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {auditStep,createHiveReader} from '../netlify/lib/hive-contact-audit.mjs';
+import {auditStep,createHiveReader,reconciliationRecord} from '../netlify/lib/hive-contact-audit.mjs';
 const env={HIVE_CONTACT_AUDIT_ENABLED:'true',HIVE_CONTACT_AUDIT_RUN_ID:'test_run_01',
  HIVE_CONTACT_AUDIT_NOT_BEFORE:'2026-10-13T00:00:00Z',HIVE_CONTACT_AUDIT_EXPIRES_AT:'2026-10-13T01:00:00Z'};
 class Store{
@@ -13,6 +13,42 @@ class Store{
 }
 const page=(ids=['a'],next=null,total=ids.length)=>({data:ids.map(id=>({id,roles:[]})),next_cursor:next,total});
 const args=(store,read=async()=>page())=>({store,read,env,context:'production',now:()=> '2026-10-13T00:00:00Z'});
+
+test('official contact address_line2 preserves suite through projection',()=>{
+ const raw={id:'contact1',first_name:'First',last_name:'Last',email:'agent@example.test',
+  phone:'5550100',agency_id:'agency1',uses_agency_address:true,address:'100 Main St',
+  address_line2:'Suite 203',city:'Town',state:'OH',zip:'44000',country:'US',
+  updated_at:'2026-10-13T00:00:00Z',roles:[],tags:[]};
+ const {tags,...expected}=raw;
+ assert.deepEqual(reconciliationRecord('contacts',raw),{...expected,candidate_agent_tags:[]});
+});
+test('official agency address_line2 preserves suite through projection',()=>{
+ const raw={id:'agency1',name:'Office',phone:'5550100',address:'100 Main St',address_line2:'Unit B',
+  city:'Town',state:'OH',zip:'44000',country:'US',updated_at:'2026-10-13T00:00:00Z'};
+ assert.deepEqual(reconciliationRecord('agencies',raw),raw);
+});
+test('role values preserved verbatim; missing is not falsely marked empty',()=>{
+ assert.deepEqual(reconciliationRecord('contacts',{id:'a',roles:['Buyer Agent','Listing Agent']}).roles,['Buyer Agent','Listing Agent']);
+ assert.deepEqual(reconciliationRecord('contacts',{id:'a',roles:['Agent','Seller Agent']}).roles,['Agent','Seller Agent']);
+ assert.deepEqual(reconciliationRecord('contacts',{id:'a',roles:['Lender','Builder','Attorney','Future Role']}).roles,['Attorney','Builder','Future Role','Lender']);
+ assert.deepEqual(reconciliationRecord('contacts',{id:'a',roles:[]}).roles,[]);
+ assert.equal(Object.hasOwn(reconciliationRecord('contacts',{id:'a'}),'roles'),false);
+ assert.throws(()=>reconciliationRecord('contacts',{id:'a',roles:'Agent'}));
+});
+test('unlinked contact retains plain-text agency and business evidence',()=>{
+ const r=reconciliationRecord('contacts',{id:'a',agency_id:null,agency_name:'Downtown Office',business_name:'Example Realty',notes:'omit'});
+ assert.equal(r.agency_id,null);assert.equal(r.agency_name,'Downtown Office');assert.equal(r.business_name,'Example Realty');
+ assert.equal(Object.hasOwn(r,'notes'),false);
+});
+test('suite changes affect stored projection and snapshot hash',async()=>{
+ const store=new Store();let n=0;
+ for(let i=0;i<4;i++)await auditStep(args(store,async()=>({total:1,next_cursor:null,
+  data:[{id:'a',address:'100 Main St',address_line2:++n<=2?'Suite A':'Suite B'}]})));
+ assert.equal(store.value.status,'changed_between_passes_hold');
+ assert.equal(store.value.snapshots[0].contacts.rows[0].address_line2,'Suite A');
+ assert.equal(store.value.snapshots[1].agencies.rows[0].address_line2,'Suite B');
+ assert.notEqual(store.value.snapshots[0].contacts.hash,store.value.snapshots[1].contacts.hash);
+});
 
 test('disabled and preview gates touch neither storage nor Hive',async()=>{
  const no=()=>{throw Error('must not call')};
@@ -117,7 +153,8 @@ test('excluded contact and agency details never enter stored state or hash',asyn
  for(let i=0;i<4;i++)await auditStep(args(store,read));
  assert.equal(store.value.status,'complete');
  assert.ok(!JSON.stringify(store.value).includes('SECRET'));
- assert.deepEqual(store.value.snapshots[0].contacts.rows[0].agent_markers,['broker']);
+ assert.deepEqual(store.value.snapshots[0].contacts.rows[0].candidate_agent_tags,['broker']);
+ assert.equal(Object.hasOwn(store.value.snapshots[0].contacts.rows[0],'is_agent'),false);
  assert.equal(store.value.snapshots[0].contacts.rows[0].agency_id,'agency1');
  assert.equal(store.value.snapshots[0].agencies.rows[0].email,undefined);
 });
