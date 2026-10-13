@@ -1,4 +1,5 @@
-import {authenticate,receive,readState,importHistory,stage,review,acknowledge,dispatch,reevaluate,reviewFingerprint,resolveAgentConflict} from './cards-core.mjs';
+import {authenticate,receive,readState,importHistory,stage,review,acknowledge,dispatch,reevaluate,reviewFingerprint,resolveAgentConflict,claimProjection} from './cards-core.mjs';
+import {claimDraft,submitDraft} from './cards-ai.mjs';
 import {ownerPage,ownerScript} from './cards-ui.mjs';
 import {mappingFrom,verifyOffice,officeFingerprint,retryEvent} from './cards-worker.mjs';
 import {createHiveReader,resolveOffice,sheetProjection,sheetRow,verifySheetReadback} from './cards-adapters.mjs';
@@ -17,12 +18,14 @@ export async function handle({request,context,env=process.env,openStore,kind,rea
   if(kind==='webhook'){const r=await receive({store,raw,signature:request.headers.get('X-HiveInspect-Signature'),instance:request.headers.get('X-Automation-Instance-Id'),env});return reply({status:r.status,eventId:r.eventId},r.code);}
   const body=JSON.parse(raw);
   if(bridge){
-   if(body.action==='projections'){const s=await readState(store);return reply({rows:Object.values(s.jobs).filter(j=>j.projectionPending).slice(0,20).map(j=>({...sheetProjection(j),rawRow:sheetRow(j)}))});}
-   if(body.action==='ack'){const j=(await readState(store)).jobs[body.jobId];if(!j||!verifySheetReadback(j,body.headers,body.readback))throw Error('projection_readback_mismatch');return reply(await acknowledge(store,body));}
+   if(body.action==='claimDraft')return reply(await claimDraft(store));
+   if(body.action==='submitDraft')return reply(await submitDraft(store,body));
+   if(body.action==='projections'){const r=await claimProjection(store);return reply({status:r.status,projectionToken:r.token,rows:r.job?[{...sheetProjection(r.job),rawRow:sheetRow(r.job)}]:[]});}
+   if(body.action==='ack'){const j=(await readState(store)).jobs[body.jobId];if(!body.projectionToken||!j||!verifySheetReadback(j,body.headers,body.readback))throw Error('projection_readback_mismatch');return reply(await acknowledge(store,body));}
    // Bridge can never approve, import history or send cards.
    return reply({status:'action_forbidden'},403);
   }
-  if(body.action==='queue'){const s=await readState(store);return reply({events:Object.values(s.events).filter(e=>e.status!=='DONE'),jobs:Object.values(s.jobs)});}
+  if(body.action==='queue'){const s=await readState(store);return reply({events:Object.values(s.events).filter(e=>e.status!=='DONE'),jobs:Object.values(s.jobs),projectionLease:s.projectionLease||null});}
   if(body.action==='history')return reply(await importHistory(store,body));
   // Staging is owner-only pending verified automatic completion/office mapping.
   if(body.action==='stage')return reply(await stage(store,{...body,organization:env.HIVE_CARD_ORGANIZATION_ID}));

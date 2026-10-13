@@ -56,7 +56,7 @@ bridge cannot approve, import history, stage a job or order a card.
 Additional implementation: a gated five-minute draft worker resolves contacts and
 linked agencies using reviewed mapping; requires an owner office/suppression
 attestation (expires after 30 days), reconciled history and exact stable IDs;
-and produces at most three grounded template candidates before manual review.
+and queues a draft request. The authenticated Zapier bridge claims at most three AI attempts; each valid candidate must pass deterministic exact/near-duplicate checks before review. Fixed template candidates remain only as prototype examples.
 A generic owner review page holds its bearer token only in memory and supports
 exact-copy edits, prepare, and explicit approval. It does not display a Cardly
 rendered proof; actual artwork review remains external and mandatory before use.
@@ -169,7 +169,7 @@ https://api.card.ly/openapi/en-AU/2.2.0/json (link observed; specification not f
 
 ## Synthetic checks and deployment boundary
 
-Run `node --test tests/cards.test.mjs` (39 synthetic Node tests). Tests use an in-memory CAS store,
+Run `node --test tests/cards.test.mjs` (44 synthetic Node tests). Tests use an in-memory CAS store,
 synthetic keys/IDs/addresses and injected HTTP mocks. They exercise concurrent
 receipt/draft collisions, wrong signatures/organization, failure before ack,
 copy exhaustion, approval edits, incomplete history, permissions, provider test
@@ -199,7 +199,7 @@ and complete Cardly login. Account linkage must then be verified read-only.
 The earlier Hive form was UNSAVED and its tab closed; no persistent automation
 was created. The preparation screenshot is evidence of a proposal only.
 
-39 Node tests validate this draft using synthetic in-memory CAS and fixture reads.
+44 Node tests validate this draft using synthetic in-memory CAS and fixture reads.
 The earlier Python scaffold separately passed 51 tests; those do not validate
 this implementation. No real SDK/Blobs concurrent-write or ambiguous-write
 integration test has run. Required before activation: authorized nonsending
@@ -211,3 +211,54 @@ no alternate browser/localhost workaround was attempted.
 Owner review preparation uses a monotonic generation guard. Input/load changes invalidate pending preparations; out-of-order responses are discarded, failed current requests invalidate state, and approval rechecks current exact text/artwork/job revision. Regression tests cover these races.
 
 Owner-only resolveAgentConflict requires the selected verified normalized snapshot, current recipient evidence and exact revisions of all conflicting HOLD jobs. It refuses ordered/sent records, preserves histories, supersedes unselected jobs and leaves selected job HOLD for explicit reevaluation into fresh review. It never restores prior approval. This administrative API is not yet exposed as a review-page control.
+
+## 2026-10-13 disabled Zap integration update
+
+Original Zap375332117 remains Draft/OFF with unconditional Code hard-stop step2.
+Legacy email replaced with Cardly Send a Card, original connection66835243.
+No action test, card order, AI generation or Sheet write ran. No new connection,
+API key, permission or credential was created. Duplicate66835252 untouched.
+
+Read-only Cardly choices:
+- jjj: c3e9c828-876a-726b-936d-3972b263caf9; Blank A4 Letter artwork b6afb828-2dfc-76f6-cd2a-c770fd11ad58.
+- kj: c69dccf6-9360-7bc2-7bf4-cc4aa44d426a; test (Postcard) artwork79f93370-9869-19aa-3cb4-0199753f3287.
+- testst: 51b6b82d-de3b-ee03-6b7a-c9a74f2a9315; same test postcard artwork.
+Template labels show undefined type; no intended artwork approved. Temporary
+choices cleared. Sender/return address unverified; fields show generic sample
+values, not evidence of Neal's address. No price-only/preview-only event exposed
+by Zapier Cardly1.2.5. No Send a Card test even if testMode appears.
+
+ChatGPT Conversation step uses existing63697684 account nneuberger92@gmail.com,
+JSON output and explicit drafting instructions. User Message remains a disabled
+unmapped placeholder; no real context has been transmitted. claimDraft/submitDraft
+bridge actions are implemented: 5-minute attempt lease, maximum3attempts, stale
+revision rejection, at most20KB prior exact text, context restricted to first name
+and completion boolean. No buyer/property/report/address payload. AI output is
+reserved deterministically before AWAITING_APPROVAL, never directly to Cardly.
+Owner edits continue through deterministic checks. Generation can vary on every
+inspection; it no longer relies on rotating the three fixed prototype templates.
+Actual claim/generation/submission field links remain pending deployed bridge and
+secure credential provisioning. The API-only bridge now has drafting authority,
+but still cannot approve, import history or send.
+
+Google Sheets API Request step selected existing53111248; Zapier explicitly
+reports 'Connection not shared with you' and blocks fields. This is an unresolved
+account-access error, not authorization to grant broader access. No extra OAuth
+flow attempted. Finish field wiring only after existing authorized access works.
+
+Pure cards-sheets.mjs plans exact RAW upserts, validates all37headers and record
+identity, refuses duplicate row IDs, preserves leading zeros/formula-like text,
+and caps at current1000rows. Bridge projections now globally claim one record;
+there is no automatic claim expiry, so an ambiguous write cannot race a new row.
+Use the saved projectionToken through fetch A1:AK1000 -> planUpsert -> exact PUT
+-> GET written row -> ack(headers,readback,jobId,current revision,projectionToken).
+On ambiguous write, fetch the same ID and reconcile; never blind append. Owner
+queue exposes the outstanding claim for reconciliation; after a job revision
+changes, reconcile the current projection and acknowledge the current revision
+with that same claim token. A lost claim requires owner reconciliation; there is
+no force-release action. No actual upsert/readback transport has run.
+
+User rejected prior concept PDF. Replacement branded proof is separately owned:
+libfile_974cb6bf7510819192a62b8cf0d03688, InSites_realtor_thank_you_brand_proof.pdf.
+No upload to Cardly or artwork approval. Pricing, dimensions, bleed and mailing
+zones remain unverified. No deployment or launch authority granted.

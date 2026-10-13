@@ -38,5 +38,5 @@ export async function workerStep({store,read,env,now=Date.now()}){
  if(attestation.doNotMail!==false)return hold('do_not_mail');
  if(latest.historyReady[hash(identity.agentId)]?.complete!==true)return hold('history_reconciliation_required');
  const snapshot={...office,organizationId:env.HIVE_CARD_ORGANIZATION_ID,inspectionId:identity.inspectionId,completionVerified:true,addressVerified:true,addressEvidence:attestation.addressEvidence,addressVerifiedAt:attestation.verifiedAt,suppressionEvidence:attestation.suppressionEvidence,doNotMail:false,officeHash:attestation.officeHash};
- return stage(store,{eventId:event.id,snapshot,candidates:draftCandidates(office.recipient.firstName),organization:env.HIVE_CARD_ORGANIZATION_ID},now);
+ return stage(store,{eventId:event.id,snapshot,candidates:[],organization:env.HIVE_CARD_ORGANIZATION_ID},now);
 }

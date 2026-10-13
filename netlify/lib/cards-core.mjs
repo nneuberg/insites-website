@@ -1,4 +1,4 @@
-import {createHash,createHmac,timingSafeEqual} from 'node:crypto';
+import {createHash,createHmac,timingSafeEqual,randomUUID} from 'node:crypto';
 export const hash=value=>createHash('sha256').update(value).digest('hex');
 const canonical=x=>Array.isArray(x)?x.map(canonical):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,canonical(x[k])])):x;
 export const fingerprint=x=>hash(JSON.stringify(canonical(x)));
@@ -110,7 +110,7 @@ export async function review(store,{jobId,revision,text,artwork,reviewedFingerpr
  });
 }
 export async function readState(store){return (await store.getWithMetadata('state',{type:'json'}))?.data||initial();}
-export async function acknowledge(store,{jobId,revision}){return mutate(store,s=>{const j=s.jobs[jobId];if(!j||j.revision!==revision)throw Error('stale_projection');j.projectionPending=false;return {status:'acknowledged'};});}
+export async function acknowledge(store,{jobId,revision,projectionToken}){return mutate(store,s=>{if(s.projectionLease&&(s.projectionLease.token!==projectionToken||s.projectionLease.jobId!==jobId))throw Error('projection_lease_mismatch');const j=s.jobs[jobId];if(!j||j.revision!==revision)throw Error('stale_projection');j.projectionPending=false;s.projectionLease=null;return {status:'acknowledged'};});}
 export function dispatch(){throw Error('LIVE_CARD_DELIVERY_NOT_IMPLEMENTED_OR_AUTHORIZED');}
 export async function reevaluate(store,{jobId,revision,snapshot,candidates,organization},now=Date.now()){
  return mutate(store,s=>{
@@ -138,5 +138,15 @@ export async function resolveAgentConflict(store,{jobId,revisions,snapshot,organ
   if(qualification(snapshot,organization)||officeQualification(s,snapshot,now)||s.historyReady[hash(snapshot.agentId)]?.complete!==true)throw Error('conflict_qualification_hold');
   for(const j of group){j.priorSnapshots??=[];j.priorSnapshots.push({revision:j.revision,snapshot:j.snapshot,status:j.status,error:j.error,approval:j.approval,draftText:j.draftText});revoke(j);j.conflictResolution={selectedJobId:jobId,evidence:currentRecipientEvidence,at:now};j.status=j.id===jobId?'HOLD':'SUPERSEDED';j.error=j.id===jobId?'resolved_recipient_requires_fresh_review':'superseded_recipient';if(j.id===jobId)j.snapshot=structuredClone(snapshot);changed(j,now);audit(s,j.id,'agent_conflict_resolved_approval_revoked',now);}
   return {status:'HOLD',jobId,deliveryEnabled:false};
+ });
+}
+
+export async function claimProjection(store,now=Date.now()){
+ return mutate(store,s=>{
+  // No automatic lease expiry: an ambiguous Sheets write must be reconciled by
+  // the same serialized run/owner before another record can claim a row.
+  if(s.projectionLease)return {unchanged:true,status:'projection_busy_reconcile_required'};
+  const j=Object.values(s.jobs).find(j=>j.projectionPending);if(!j)return {unchanged:true,status:'idle'};
+  const token=randomUUID();s.projectionLease={token,jobId:j.id,revision:j.revision,at:now};return {status:'claimed',token,job:structuredClone(j)};
  });
 }
