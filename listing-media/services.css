@@ -78,3 +78,5 @@
 .appointment-policy{border-left:2px solid #ad8e3d;padding:4px 0 4px 16px;margin:24px 0 30px}.appointment-policy .photo-policy{border:0;padding:0;margin:0}.appointment-policy .appointment-notes{margin:10px 0 0;padding-left:16px}.appointment-policy .appointment-notes li:last-child{margin-bottom:0}
 
 .appointment-policy .appointment-notes{margin-top:0}.appointment-policy .appointment-notes li:first-child{margin-top:0}
+
+.appointment-policy{padding:2px 0 2px 18px}.appointment-policy .photo-policy{line-height:1.65}.appointment-policy .appointment-notes{list-style:none;margin:8px 0 0;padding:0}.appointment-policy .appointment-notes li{position:relative;padding:0 0 0 14px;margin:8px 0 0;line-height:1.65}.appointment-policy .appointment-notes li:first-child{margin-top:0}.appointment-policy .appointment-notes li::before{content:"•";position:absolute;left:0;top:0;color:#ad8e3d}
