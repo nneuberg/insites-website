@@ -29,6 +29,6 @@ export function buildBookingPayload(catalog, selection, values) {
     requested_services:serviceLines.join('\n'),
     priced_services_total:selection.lines.length ? money(selection.totalCents) : 'Quote required',
     pricing_notes:[extra,'Booking request; availability and final price require confirmation.'].filter(Boolean).join(' '),
-    preferred_date:values.preferred_date || 'No specific date',date_flexibility:values.date_flexibility,notes:values.notes || 'None provided',
+    preferred_time:values.preferred_time || 'Not provided',preferred_date:values.preferred_date || 'No specific date',date_flexibility:values.date_flexibility,notes:values.notes || 'None provided',
   };
 }
