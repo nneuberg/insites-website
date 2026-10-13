@@ -78,7 +78,7 @@ export async function stage(store,{eventId,snapshot,candidates,organization},now
   if(!snapshot?.inspectionId||!snapshot?.agentId)throw Error('stable_ids_required');
   const id=fingerprint([organization,snapshot.inspectionId,snapshot.agentId,'thank-you-v1']);
   if(s.jobs[id]){
-   const j=s.jobs[id];event.status='DONE';event.jobId=id;
+   const j=s.jobs[id];event.status='DONE';event.jobId=id;if(j.status==='SUPERSEDED')return {status:'superseded',jobId:id};
    if(fingerprint(j.snapshot)!==fingerprint(snapshot)){
     j.priorSnapshots??=[];j.priorSnapshots.push({revision:j.revision,snapshot:j.snapshot,status:j.status,error:j.error,approval:j.approval,draftText:j.draftText});
     j.snapshot=structuredClone(snapshot);j.status='HOLD';j.error=qualification(snapshot,organization)||'snapshot_changed_review_required';revoke(j);changed(j,now);audit(s,id,'snapshot_changed_approval_revoked',now);
@@ -120,12 +120,23 @@ export async function reevaluate(store,{jobId,revision,snapshot,candidates,organ
   if(!snapshot||!Array.isArray(candidates)||snapshot.agentId!==j.snapshot.agentId||snapshot.inspectionId!==j.snapshot.inspectionId||snapshot.organizationId!==j.snapshot.organizationId)throw Error('recovery_identity_changed');
   let reason=qualification(snapshot,organization)||officeQualification(s,snapshot,now);
   if(s.historyReady[hash(snapshot.agentId)]?.complete!==true)reason='history_unreconciled';
-  if(Object.values(s.jobs).some(other=>other.id!==j.id&&other.snapshot.inspectionId===snapshot.inspectionId&&other.snapshot.agentId!==snapshot.agentId))reason='changed_agent_manual_review';
+  if(Object.values(s.jobs).some(other=>other.id!==j.id&&other.status!=='SUPERSEDED'&&other.snapshot.inspectionId===snapshot.inspectionId&&other.snapshot.agentId!==snapshot.agentId))reason='changed_agent_manual_review';
   j.priorSnapshots??=[];j.priorSnapshots.push({revision:j.revision,snapshot:j.snapshot,status:j.status,error:j.error,approval:j.approval,draftText:j.draftText});
   j.snapshot=structuredClone(snapshot);j.historyReconciled=s.historyReady[hash(snapshot.agentId)]?.complete===true;revoke(j);
   const draft=reason?null:candidates.slice(0,3).find(t=>distinct(s,snapshot.agentId,t,j.id))||null;
   if(draft)reserve(s,snapshot.agentId,draft,j.id);
   j.draftText=draft;j.status=reason?'HOLD':draft?'AWAITING_APPROVAL':'MANUAL_REVIEW';j.error=reason||(!draft?'copy_exhausted':null);changed(j,now);audit(s,j.id,'hold_reevaluated_approval_revoked',now);
   return {status:j.status,jobId:j.id,deliveryEnabled:false};
+ });
+}
+
+export async function resolveAgentConflict(store,{jobId,revisions,snapshot,organization,currentRecipientEvidence},now=Date.now()){
+ return mutate(store,s=>{
+  const selected=s.jobs[jobId];if(!selected||!currentRecipientEvidence||snapshot?.agentId!==selected.snapshot.agentId||snapshot?.inspectionId!==selected.snapshot.inspectionId||snapshot?.organizationId!==selected.snapshot.organizationId)throw Error('conflict_identity_unverified');
+  const group=Object.values(s.jobs).filter(j=>j.snapshot.organizationId===organization&&j.snapshot.inspectionId===snapshot.inspectionId&&j.status!=='SUPERSEDED');
+  if(group.length<2||group.some(j=>j.status!=='HOLD'||j.orderId||j.sentAt||j.sentText||revisions?.[j.id]!==j.revision))throw Error('conflict_not_resolvable');
+  if(qualification(snapshot,organization)||officeQualification(s,snapshot,now)||s.historyReady[hash(snapshot.agentId)]?.complete!==true)throw Error('conflict_qualification_hold');
+  for(const j of group){j.priorSnapshots??=[];j.priorSnapshots.push({revision:j.revision,snapshot:j.snapshot,status:j.status,error:j.error,approval:j.approval,draftText:j.draftText});revoke(j);j.conflictResolution={selectedJobId:jobId,evidence:currentRecipientEvidence,at:now};j.status=j.id===jobId?'HOLD':'SUPERSEDED';j.error=j.id===jobId?'resolved_recipient_requires_fresh_review':'superseded_recipient';if(j.id===jobId)j.snapshot=structuredClone(snapshot);changed(j,now);audit(s,j.id,'agent_conflict_resolved_approval_revoked',now);}
+  return {status:'HOLD',jobId,deliveryEnabled:false};
  });
 }

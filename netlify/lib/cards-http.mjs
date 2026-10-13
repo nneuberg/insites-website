@@ -1,4 +1,4 @@
-import {authenticate,receive,readState,importHistory,stage,review,acknowledge,dispatch,reevaluate,reviewFingerprint} from './cards-core.mjs';
+import {authenticate,receive,readState,importHistory,stage,review,acknowledge,dispatch,reevaluate,reviewFingerprint,resolveAgentConflict} from './cards-core.mjs';
 import {ownerPage,ownerScript} from './cards-ui.mjs';
 import {mappingFrom,verifyOffice,officeFingerprint,retryEvent} from './cards-worker.mjs';
 import {createHiveReader,resolveOffice,sheetProjection,sheetRow,verifySheetReadback} from './cards-adapters.mjs';
@@ -26,6 +26,7 @@ export async function handle({request,context,env=process.env,openStore,kind,rea
   if(body.action==='history')return reply(await importHistory(store,body));
   // Staging is owner-only pending verified automatic completion/office mapping.
   if(body.action==='stage')return reply(await stage(store,{...body,organization:env.HIVE_CARD_ORGANIZATION_ID}));
+  if(body.action==='resolveAgentConflict')return reply(await resolveAgentConflict(store,{...body,organization:env.HIVE_CARD_ORGANIZATION_ID}));
   if(body.action==='reevaluate')return reply(await reevaluate(store,{...body,organization:env.HIVE_CARD_ORGANIZATION_ID}));
   if(body.action==='retryEvent')return reply(await retryEvent(store,body.eventId));
   if(['officePreview','verifyOffice'].includes(body.action)){
