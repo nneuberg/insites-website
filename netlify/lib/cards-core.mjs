@@ -57,7 +57,7 @@ export function similar(a,b){
 const distinct=(s,agent,text,jobId)=>typeof text==='string'&&text.length<=1000&&normalize(text)&&!(s.history[hash(agent)]||[]).some(r=>r.jobId!==jobId&&similar(normalize(text),r.normalized));
 function reserve(s,agent,text,jobId){const key=hash(agent);s.history[key]??=[];if(!s.history[key].some(r=>r.normalized===normalize(text)&&r.jobId===jobId))s.history[key].push({jobId,text,normalized:normalize(text),sha256:hash(normalize(text))});}
 const audit=(s,id,action,now)=>s.audit.push({id,action,at:now,actor:'owner'});
-const changed=(job,now)=>{job.revision++;job.updatedAt=now;job.projectionPending=true;};
+export const changed=(job,now)=>{job.revision++;job.updatedAt=now;job.projectionPending=true;};
 const revoke=job=>{job.approvedText=null;job.approval=null;};
 export async function importHistory(store,{agentId,rows,complete,evidence},now=Date.now()){
  if(!agentId||!Array.isArray(rows)||rows.length>5000||!evidence)throw Error('invalid_history');
@@ -110,7 +110,14 @@ export async function review(store,{jobId,revision,text,artwork,reviewedFingerpr
  });
 }
 export async function readState(store){return (await store.getWithMetadata('state',{type:'json'}))?.data||initial();}
-export async function acknowledge(store,{jobId,revision,projectionToken}){return mutate(store,s=>{if(s.projectionLease&&(s.projectionLease.token!==projectionToken||s.projectionLease.jobId!==jobId))throw Error('projection_lease_mismatch');const j=s.jobs[jobId];if(!j||j.revision!==revision)throw Error('stale_projection');j.projectionPending=false;s.projectionLease=null;return {status:'acknowledged'};});}
+export async function acknowledge(store,{jobId,revision,projectionToken},now=Date.now()){
+ return mutate(store,s=>{
+  const lease=s.projectionLease;
+  if(!lease||typeof projectionToken!=='string'||!projectionToken||lease.token!==projectionToken||lease.jobId!==jobId||lease.revision!==revision||!Number.isFinite(lease.until)||lease.until<=now)throw Error('projection_lease_mismatch');
+  const j=s.jobs[jobId];if(!j||j.revision!==revision||!j.projectionPending)throw Error('stale_projection');
+  j.projectionPending=false;s.projectionLease=null;return {status:'acknowledged'};
+ });
+}
 export function dispatch(){throw Error('LIVE_CARD_DELIVERY_NOT_IMPLEMENTED_OR_AUTHORIZED');}
 export async function reevaluate(store,{jobId,revision,snapshot,candidates,organization},now=Date.now()){
  return mutate(store,s=>{
@@ -147,6 +154,6 @@ export async function claimProjection(store,now=Date.now()){
   // the same serialized run/owner before another record can claim a row.
   if(s.projectionLease)return {unchanged:true,status:'projection_busy_reconcile_required'};
   const j=Object.values(s.jobs).find(j=>j.projectionPending);if(!j)return {unchanged:true,status:'idle'};
-  const token=randomUUID();s.projectionLease={token,jobId:j.id,revision:j.revision,at:now};return {status:'claimed',token,job:structuredClone(j)};
+  const token=randomUUID();s.projectionLease={token,jobId:j.id,revision:j.revision,at:now,until:now+300000};return {status:'claimed',token,job:structuredClone(j)};
  });
 }

@@ -105,9 +105,9 @@ Do not run Hive's Test Webhook: it transmits selected real inspection data.
 
 ## Existing Zapier workflow and Sheets ledger
 
-Reuse original card Zap 375332117 (formerly Spectora Report -> Ask for Card
+Reuse original card Zap [private operational ID] (formerly Spectora Report -> Ask for Card
 Message). Keep its hard-stop Code step and Draft/OFF state throughout setup.
-Do not touch calendar Zap 383074395, blog 281609214, or the separate contact-sync
+Do not touch calendar Zap [private operational ID], blog [private operational ID], or the separate contact-sync
 workflow. Do not activate legacy Catch Raw Hook/email steps.
 
 Sent Cards already exists in the same Master Agents/Brokerages workbook with
@@ -169,7 +169,7 @@ https://api.card.ly/openapi/en-AU/2.2.0/json (link observed; specification not f
 
 ## Synthetic checks and deployment boundary
 
-Run `node --test tests/cards.test.mjs` (44 synthetic Node tests). Tests use an in-memory CAS store,
+Run `node --test tests/cards.test.mjs` (49 synthetic Node tests). Tests use an in-memory CAS store,
 synthetic keys/IDs/addresses and injected HTTP mocks. They exercise concurrent
 receipt/draft collisions, wrong signatures/organization, failure before ack,
 copy exhaustion, approval edits, incomplete history, permissions, provider test
@@ -191,15 +191,12 @@ collisions still hold. Projection reports held/untested copy truthfully and
 preserves the original automation instance ID separately from internal hashes.
 Equal owner and bridge token hashes are rejected before store access.
 
-Cardly connection consent was granted, and the Zapier OAuth screen reached
-Cardly's username/password login on 2026-10-13. No credentials entered; login
-requires user handoff. Do not share the OAuth state URL as a portable iOS link.
-An iPhone can independently open Zapier App Connections, create Cardly connection
-and complete Cardly login. Account linkage must then be verified read-only.
+Cardly account connection is verified and attached to the disabled Zap. No
+new login, credential entry or account sharing is needed.
 The earlier Hive form was UNSAVED and its tab closed; no persistent automation
 was created. The preparation screenshot is evidence of a proposal only.
 
-44 Node tests validate this draft using synthetic in-memory CAS and fixture reads.
+49 Node tests validate this draft using synthetic in-memory CAS and fixture reads.
 The earlier Python scaffold separately passed 51 tests; those do not validate
 this implementation. No real SDK/Blobs concurrent-write or ambiguous-write
 integration test has run. Required before activation: authorized nonsending
@@ -214,25 +211,25 @@ Owner-only resolveAgentConflict requires the selected verified normalized snapsh
 
 ## 2026-10-13 disabled Zap integration update
 
-Original Zap375332117 remains Draft/OFF with unconditional Code hard-stop step2.
-Legacy email replaced with Cardly Send a Card, original connection66835243.
-No action test, card order, AI generation or Sheet write ran. No new connection,
-API key, permission or credential was created. Duplicate66835252 untouched.
+Original Zap[private operational ID] remains Draft/OFF with unconditional Code hard-stop step2.
+Legacy email replaced with Cardly Send a Card, original connection[private operational ID].
+Only an isolated read-only Sheets GET was tested. No card action test, order, AI generation or Sheet write ran. No new connection,
+API key, permission or credential was created. Duplicate[private operational ID] untouched.
 
 Read-only Cardly choices:
-- jjj: c3e9c828-876a-726b-936d-3972b263caf9; Blank A4 Letter artwork b6afb828-2dfc-76f6-cd2a-c770fd11ad58.
-- kj: c69dccf6-9360-7bc2-7bf4-cc4aa44d426a; test (Postcard) artwork79f93370-9869-19aa-3cb4-0199753f3287.
-- testst: 51b6b82d-de3b-ee03-6b7a-c9a74f2a9315; same test postcard artwork.
+- jjj: [private artifact ID]; Blank A4 Letter artwork [private artifact ID].
+- kj: [private artifact ID]; test (Postcard) artwork[private artifact ID].
+- testst: [private artifact ID]; same test postcard artwork.
 Template labels show undefined type; no intended artwork approved. Temporary
 choices cleared. Sender/return address unverified; fields show generic sample
 values, not evidence of Neal's address. No price-only/preview-only event exposed
 by Zapier Cardly1.2.5. No Send a Card test even if testMode appears.
 
-ChatGPT Conversation step uses existing63697684 account nneuberger92@gmail.com,
+ChatGPT Conversation step uses existing[private operational ID] account [private connected account],
 JSON output and explicit drafting instructions. User Message remains a disabled
 unmapped placeholder; no real context has been transmitted. claimDraft/submitDraft
 bridge actions are implemented: 5-minute attempt lease, maximum3attempts, stale
-revision rejection, at most20KB prior exact text, context restricted to first name
+revision rejection, at most20,000 UTF-8 bytes of serialized prior exact text, context restricted to first name
 and completion boolean. No buyer/property/report/address payload. AI output is
 reserved deterministically before AWAITING_APPROVAL, never directly to Cardly.
 Owner edits continue through deterministic checks. Generation can vary on every
@@ -241,24 +238,44 @@ Actual claim/generation/submission field links remain pending deployed bridge an
 secure credential provisioning. The API-only bridge now has drafting authority,
 but still cannot approve, import history or send.
 
-Google Sheets API Request step selected existing53111248; Zapier explicitly
-reports 'Connection not shared with you' and blocks fields. This is an unresolved
-account-access error, not authorization to grant broader access. No extra OAuth
-flow attempted. Finish field wiring only after existing authorized access works.
+Google Sheets API Request uses the existing authorized connection. A full editor
+refresh cleared its transient access warning; an isolated GET returned HTTP200,
+the expected37headers and no records. No reconnect, sharing or scope expansion
+is needed. The read step is configured; actual write/readback and bridge mappings
+remain unfinished pending authorized deployment and secure bridge configuration.
 
 Pure cards-sheets.mjs plans exact RAW upserts, validates all37headers and record
 identity, refuses duplicate row IDs, preserves leading zeros/formula-like text,
 and caps at current1000rows. Bridge projections now globally claim one record;
-there is no automatic claim expiry, so an ambiguous write cannot race a new row.
+claims have a five-minute acknowledgment deadline but never automatically free the lock, so ambiguous writes cannot race a new row.
 Use the saved projectionToken through fetch A1:AK1000 -> planUpsert -> exact PUT
 -> GET written row -> ack(headers,readback,jobId,current revision,projectionToken).
 On ambiguous write, fetch the same ID and reconcile; never blind append. Owner
 queue exposes the outstanding claim for reconciliation; after a job revision
-changes, reconcile the current projection and acknowledge the current revision
-with that same claim token. A lost claim requires owner reconciliation; there is
+changes or a claim expires, acknowledgment is rejected. Such claims require
+explicit owner reconciliation; a secure recovery action remains unfinished. A lost claim requires owner reconciliation; there is
 no force-release action. No actual upsert/readback transport has run.
 
 User rejected prior concept PDF. Replacement branded proof is separately owned:
-libfile_974cb6bf7510819192a62b8cf0d03688, InSites_realtor_thank_you_brand_proof.pdf.
+[private Library ID], InSites_realtor_thank_you_brand_proof.pdf.
 No upload to Cardly or artwork approval. Pricing, dimensions, bleed and mailing
 zones remain unverified. No deployment or launch authority granted.
+
+Acknowledgment requires an active exact job/token/revision claim with an unexpired
+five-minute deadline and a pending projection. Missing, expired, already-used and
+wrong claims reject; no idempotent-ack exception is implemented. Expiry never
+automatically frees the global write lock. Interrupted/expired or revision-changed
+claims remain safely held pending an explicit reconciliation recovery action.
+
+Private workbook ID is bound by createLedgerPlanner to HIVE_CARDS_LEDGER_WORKBOOK_ID deployment configuration, not committed or accepted from projection/request fields. The returned planUpsert accepts only values and projection.
+Account email addresses, connection IDs and private artifact IDs are omitted from
+repository documentation. Keep actual mapping only in the private operations handoff.
+
+Sheets access correction: refreshing the editor resolved its transient account
+warning. Existing connection/API Request successfully performed an isolated GET
+returning HTTP200, the37expectedheaders and zero card rows. No OAuth, sharing,
+permissions or write occurred. No reconnect is necessary.
+
+AI context-capacity holds use the same versioned job-change helper as other
+updates: revision, updatedAt and projectionPending all change, so an already
+acknowledged ledger projection receives the new hold reason.
