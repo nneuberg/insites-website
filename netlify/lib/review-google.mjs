@@ -16,7 +16,7 @@ export function googleSync({store,engine,env=process.env,fetcher=fetch,now=()=>D
   const baseline=await store.get('google-baseline',{type:'json'});
   if(!baseline){await store.setJSON('google-baseline',{since:now()});return {baselineCreated:true};}
   const rows=[];
-  for await(const page of store.list({prefix:'requests/',paginate:true}))for(const blob of page.blobs){const row=await store.get(blob.key,{type:'json'});if(!row.googleReviewedAt&&row.createdAt>=now()-30*DAY)rows.push(row);}
+  for await(const page of store.list({prefix:'requests/',paginate:true}))for(const blob of page.blobs){const row=await store.get(blob.key,{type:'json'});if(!row.isTest&&!row.googleReviewedAt&&row.createdAt>=now()-30*DAY)rows.push(row);}
   let notified=0;
   for(const review of data.reviews||[]){
    const created=Date.parse(review.createTime);if(!review.reviewId||!Number.isFinite(created)||created<baseline.since)continue;
