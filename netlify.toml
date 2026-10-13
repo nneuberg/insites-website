@@ -1,6 +1,4 @@
 [build]
-  # Draft audit branch: remove only with explicit deployment approval.
-  ignore = "exit 0"
   publish = "."
   functions = "netlify/functions"
 
