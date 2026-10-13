@@ -6,6 +6,31 @@ const hash=value=>createHash('sha256').update(JSON.stringify(canonical(value))).
 const sorted=rows=>[...rows].sort((a,b)=>a.id.localeCompare(b.id));
 const resources=['contacts','agencies'];
 const empty=()=>({cursor:null,total:null,seenCursors:[],rows:[],pages:0});
+const addressFields=['address','address_line_2','city','state','zip','country'];
+const agentTags=new Set(['broker','1st time buying agent','repeat buying agent','super buying agent',
+ 'vip buying agent','absent buying agent','absent selling agent','new selling agent','repeat selling agent']);
+const knownRoles=new Set(['Agent','Buyer Agent','Seller Agent','Listing Agent','Customer']);
+export function reconciliationRecord(resource,row){
+ const fields=resource==='contacts'?['id','first_name','last_name','email','phone','agency_id','updated_at',...addressFields]
+  :['id','name','phone','updated_at',...addressFields];
+ const result={};
+ for(const key of fields)if(Object.hasOwn(row,key)){
+  if(row[key]!==null&&typeof row[key]!=='string')throw Error('Invalid projection field');
+  result[key]=row[key];
+ }
+ if(resource==='contacts'){
+  if(Object.hasOwn(row,'uses_agency_address')){
+   if(typeof row.uses_agency_address!=='boolean')throw Error('Invalid association flag');
+   result.uses_agency_address=row.uses_agency_address;
+  }
+  if(!Object.hasOwn(result,'agency_id')&&row.agency&&typeof row.agency.id==='string')result.agency_id=row.agency.id;
+  result.roles=Array.isArray(row.roles)?[...new Set(row.roles.filter(r=>knownRoles.has(r)))].sort():[];
+  // Preserve only specific agent/broker classification markers, not unrelated tags.
+  result.agent_markers=Array.isArray(row.tags)?[...new Set(row.tags.map(t=>typeof t==='string'?t:t?.name)
+   .filter(t=>typeof t==='string').map(t=>t.trim().toLowerCase()).filter(t=>agentTags.has(t)))].sort():[];
+ }
+ return result;
+}
 
 export function auditWindow(env,now=()=>new Date().toISOString()){
  const start=Date.parse(env.HIVE_CONTACT_AUDIT_NOT_BEFORE||'');
@@ -45,6 +70,7 @@ export async function auditStep({store,read,env=process.env,context='local',now=
  // CAS fences concurrent callers; only the successful claimant may fetch.
  if(!Number.isSafeInteger(state.attempts)||state.attempts<0)return {status:'invalid_state_hold'};
  if(state.attempts>=80)return {status:'attempt_budget_exhausted'};
+ if(state.nextRetryAt&&Date.parse(state.nextRetryAt)>Date.parse(now()))return {status:'backoff_retry_later'};
  if(state.inflightUntil&&Date.parse(state.inflightUntil)>Date.parse(now()))return {status:'reader_busy_retry'};
  state.attempts++;
  state.inflightUntil=new Date(Date.parse(now())+30000).toISOString();
@@ -56,10 +82,13 @@ export async function auditStep({store,read,env=process.env,context='local',now=
  let page;
  try{page=await read(resource,state.current.cursor);}catch{
   delete state.inflightUntil;
+  state.consecutiveFailures=(state.consecutiveFailures||0)+1;
+  state.nextRetryAt=new Date(Date.parse(now())+Math.min(30000,5000*2**Math.min(state.consecutiveFailures-1,3))).toISOString();
   state.status=state.attempts>=80?'attempt_budget_exhausted':'reading';
   await store.setJSON(key,state,{onlyIfMatch:owned.etag});
   return {status:state.status==='reading'?'read_failed_retry':state.status};
  }
+ state.consecutiveFailures=0;delete state.nextRetryAt;
  try{
   const c=state.current;
   if(!page||!Array.isArray(page.data)||!Number.isSafeInteger(page.total)||page.total<0||!Object.hasOwn(page,'next_cursor'))throw Error('Invalid page');
@@ -72,7 +101,7 @@ export async function auditStep({store,read,env=process.env,context='local',now=
   }
   const next=page.next_cursor;
   if(next!==null&&(typeof next!=='string'||!next||c.seenCursors.includes(next)))throw Error('Invalid cursor');
-  c.total=page.total;c.rows.push(...page.data);c.pages++;
+  c.total=page.total;c.rows.push(...page.data.map(row=>reconciliationRecord(resource,row)));c.pages++;
   if(c.rows.length>c.total)throw Error('Count exceeds total');
   if(next!==null){c.seenCursors.push(next);c.cursor=next;}
   else{
