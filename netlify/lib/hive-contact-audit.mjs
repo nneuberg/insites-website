@@ -7,6 +7,14 @@ const sorted=rows=>[...rows].sort((a,b)=>a.id.localeCompare(b.id));
 const resources=['contacts','agencies'];
 const empty=()=>({cursor:null,total:null,seenCursors:[],rows:[],pages:0});
 
+export function auditWindow(env,now=()=>new Date().toISOString()){
+ const start=Date.parse(env.HIVE_CONTACT_AUDIT_NOT_BEFORE||'');
+ const end=Date.parse(env.HIVE_CONTACT_AUDIT_EXPIRES_AT||'');
+ const current=Date.parse(now());
+ return Number.isFinite(start)&&Number.isFinite(end)&&Number.isFinite(current)&&
+  end>start&&end-start<=60*60*1000&&current>=start&&current<end;
+}
+
 // Only GET to two fixed Hive resources; no arbitrary URL, role filter or mutations.
 export function createHiveReader({env=process.env,fetcher=fetch}={}){
  return async(resource,cursor)=>{
@@ -25,16 +33,33 @@ export function createHiveReader({env=process.env,fetcher=fetch}={}){
 // Concurrent readers may duplicate a GET but cannot advance the cursor twice.
 export async function auditStep({store,read,env=process.env,context='local',now=()=>new Date().toISOString()}){
  if(context!=='production'||env.HIVE_CONTACT_AUDIT_ENABLED!=='true')return {status:'disabled'};
+ if(!auditWindow(env,now))return {status:'outside_audit_window'};
  const run=env.HIVE_CONTACT_AUDIT_RUN_ID;
  if(!/^[a-zA-Z0-9_-]{8,64}$/.test(run||''))return {status:'configuration_required'};
  const key='runs/'+run;
  const saved=await store.getWithMetadata(key,{type:'json'});
- const state=saved?structuredClone(saved.data):{schema:1,run,status:'reading',startedAt:now(),pass:0,resource:0,current:empty(),snapshots:[{},{}]};
+ const state=saved?structuredClone(saved.data):{schema:1,run,status:'reading',startedAt:now(),attempts:0,pass:0,resource:0,current:empty(),snapshots:[{},{}]};
  if(state.schema!==1||state.run!==run)return {status:'invalid_state_hold'};
  if(state.status!=='reading')return {status:state.status,counts:state.counts||null};
+ // Persist reservation BEFORE the GET. Crashes and failed reads consume budget.
+ // CAS fences concurrent callers; only the successful claimant may fetch.
+ if(!Number.isSafeInteger(state.attempts)||state.attempts<0)return {status:'invalid_state_hold'};
+ if(state.attempts>=80)return {status:'attempt_budget_exhausted'};
+ if(state.inflightUntil&&Date.parse(state.inflightUntil)>Date.parse(now()))return {status:'reader_busy_retry'};
+ state.attempts++;
+ state.inflightUntil=new Date(Date.parse(now())+30000).toISOString();
+ const reservation=await store.setJSON(key,state,saved?{onlyIfMatch:saved.etag}:{onlyIfNew:true});
+ if(!reservation.modified)return {status:'concurrent_reader_retry'};
+ const owned=await store.getWithMetadata(key,{type:'json'});
+ if(!owned||owned.data.attempts!==state.attempts||owned.data.inflightUntil!==state.inflightUntil)return {status:'concurrent_reader_retry'};
  const resource=resources[state.resource];
  let page;
- try{page=await read(resource,state.current.cursor);}catch{return {status:'read_failed_retry'};}
+ try{page=await read(resource,state.current.cursor);}catch{
+  delete state.inflightUntil;
+  state.status=state.attempts>=80?'attempt_budget_exhausted':'reading';
+  await store.setJSON(key,state,{onlyIfMatch:owned.etag});
+  return {status:state.status==='reading'?'read_failed_retry':state.status};
+ }
  try{
   const c=state.current;
   if(!page||!Array.isArray(page.data)||!Number.isSafeInteger(page.total)||page.total<0||!Object.hasOwn(page,'next_cursor'))throw Error('Invalid page');
@@ -68,7 +93,8 @@ export async function auditStep({store,read,env=process.env,context='local',now=
   state.status='invalid_snapshot_hold';state.failedAt=now();
  }
  state.updatedAt=now();
- const savedResult=await store.setJSON(key,state,saved?{onlyIfMatch:saved.etag}:{onlyIfNew:true});
+ delete state.inflightUntil;
+ const savedResult=await store.setJSON(key,state,{onlyIfMatch:owned.etag});
  if(!savedResult.modified)return {status:'concurrent_reader_retry'};
  return {status:state.status,counts:state.counts||null};
 }
