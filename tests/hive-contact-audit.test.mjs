@@ -40,6 +40,21 @@ test('unlinked contact retains plain-text agency and business evidence',()=>{
  assert.equal(r.agency_id,null);assert.equal(r.agency_name,'Downtown Office');assert.equal(r.business_name,'Example Realty');
  assert.equal(Object.hasOwn(r,'notes'),false);
 });
+test('storage latency crossing expiry prevents Hive GET',async()=>{
+ const store=new Store();let clock='2026-10-13T00:00:00Z',reads=0;
+ const original=store.getWithMetadata.bind(store);
+ store.getWithMetadata=async()=>{const result=await original();clock='2026-10-13T01:00:00Z';return result;};
+ const result=await auditStep({...args(store,async()=>{reads++;return page()}),now:()=>clock});
+ assert.equal(result.status,'outside_audit_window');assert.equal(reads,0);
+});
+test('same run cannot resume under a new window next day',async()=>{
+ const store=new Store();await auditStep(args(store,async()=>page(['a'],'next',2)));let reads=0;
+ const result=await auditStep({...args(store,async()=>{reads++;return page(['b'],null,2)}),
+  env:{...env,HIVE_CONTACT_AUDIT_NOT_BEFORE:'2026-10-14T00:00:00Z',HIVE_CONTACT_AUDIT_EXPIRES_AT:'2026-10-14T01:00:00Z'},
+  now:()=> '2026-10-14T00:00:01Z'});
+ assert.equal(result.status,'changed_window_hold');assert.equal(reads,0);
+ assert.equal(store.value.current.cursor,'next');
+});
 test('suite changes affect stored projection and snapshot hash',async()=>{
  const store=new Store();let n=0;
  for(let i=0;i<4;i++)await auditStep(args(store,async()=>({total:1,next_cursor:null,
