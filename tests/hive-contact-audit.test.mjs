@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {auditStep,createHiveReader} from '../netlify/lib/hive-contact-audit.mjs';
-const env={HIVE_CONTACT_AUDIT_ENABLED:'true',HIVE_CONTACT_AUDIT_RUN_ID:'test_run_01'};
+const env={HIVE_CONTACT_AUDIT_ENABLED:'true',HIVE_CONTACT_AUDIT_RUN_ID:'test_run_01',
+ HIVE_CONTACT_AUDIT_NOT_BEFORE:'2026-10-13T00:00:00Z',HIVE_CONTACT_AUDIT_EXPIRES_AT:'2026-10-13T01:00:00Z'};
 class Store{
  value=null;version=0;writes=0;
  async getWithMetadata(){return this.value?{data:structuredClone(this.value),etag:String(this.version)}:null;}
@@ -18,7 +19,7 @@ test('disabled and preview gates touch neither storage nor Hive',async()=>{
  for(const settings of [{context:'preview',env},{context:'production',env:{}}])
   assert.equal((await auditStep({store:{getWithMetadata:no},read:no,...settings})).status,'disabled');
 });
-test('run ID required',async()=>assert.equal((await auditStep({...args(new Store()),env:{HIVE_CONTACT_AUDIT_ENABLED:'true'}})).status,'configuration_required'));
+test('run ID required',async()=>assert.equal((await auditStep({...args(new Store()),env:{...env,HIVE_CONTACT_AUDIT_RUN_ID:''}})).status,'configuration_required'));
 test('two complete stable passes and stop without further reads',async()=>{
  const store=new Store();let reads=0;
  for(let i=0;i<4;i++)await auditStep(args(store,async()=>{reads++;return page();}));
@@ -39,7 +40,7 @@ test('empty directory requires terminal cursor and total zero',async()=>{
 test('failed read keeps cursor unchanged for safe retry',async()=>{
  const store=new Store();await auditStep(args(store,async()=>page(['a'],'next',2)));
  const before=structuredClone(store.value);assert.equal((await auditStep(args(store,async()=>{throw Error('401 secret');}))).status,'read_failed_retry');
- assert.deepEqual(store.value,before);
+ assert.deepEqual(store.value.current,before.current);assert.equal(store.value.attempts,before.attempts+1);
 });
 test('malformed or incomplete pages hold',async()=>{
  for(const invalid of [{data:[],total:0},{data:[],total:1,next_cursor:null},page(['a','a']),page(['']),{...page(),total:'1'},page(['a'],'',1)]){
@@ -58,10 +59,10 @@ test('changed contact content between passes holds even with equal totals',async
  assert.equal(store.value.status,'changed_between_passes_hold');
 });
 test('CAS rejects stale concurrent reader without overwriting state',async()=>{
- const store=new Store();let release;const wait=new Promise(r=>{release=r});
- const late=auditStep(args(store,async()=>{await wait;return page(['late']);}));
- await auditStep(args(store,async()=>page(['winner'])));release();
- assert.equal((await late).status,'concurrent_reader_retry');assert.equal(store.value.snapshots[0].contacts.rows[0].id,'winner');
+ const store=new Store();let reads=0;
+ const outcomes=await Promise.all([auditStep(args(store,async()=>{reads++;return page(['winner']);})),auditStep(args(store,async()=>{reads++;return page(['late']);}))]);
+ assert.ok(outcomes.some(x=>x.status==='concurrent_reader_retry'));assert.equal(reads,1);
+ assert.equal(store.value.snapshots[0].contacts.rows[0].id,'winner');
 });
 test('restart uses persisted cursor',async()=>{
  const store=new Store();await auditStep(args(store,async()=>page(['a'],'resume',2)));
@@ -81,4 +82,23 @@ test('reader hardcodes GET origin resources and rejects redirects',async()=>{
 test('reader fails closed on auth/missing secret',async()=>{
  await assert.rejects(()=>createHiveReader({env:{}})('contacts',null));
  await assert.rejects(()=>createHiveReader({env:{HIVE_API_KEY:'synthetic'},fetcher:async()=>({ok:false})})('contacts',null));
+});
+test('expired/missing/overlong windows touch no storage or API',async()=>{
+ for(const overrides of [{HIVE_CONTACT_AUDIT_EXPIRES_AT:''},{HIVE_CONTACT_AUDIT_EXPIRES_AT:'2026-10-13T00:00:00Z'},
+  {HIVE_CONTACT_AUDIT_EXPIRES_AT:'2026-10-14T00:00:00Z'},{HIVE_CONTACT_AUDIT_NOT_BEFORE:'2026-10-13T00:30:00Z'}]){
+  const no=()=>{throw Error('must not touch')};
+  assert.equal((await auditStep({...args({getWithMetadata:no},no),env:{...env,...overrides}})).status,'outside_audit_window');
+ }
+});
+test('80 failed calls exhaust budget and no further GET occurs',async()=>{
+ const store=new Store();let reads=0;
+ const fail=async()=>{reads++;throw Error('unavailable')};
+ for(let i=0;i<82;i++)await auditStep(args(store,fail));
+ assert.equal(reads,80);assert.equal(store.value.status,'attempt_budget_exhausted');
+});
+test('in-flight crash consumes attempt; busy holds until lease expiration',async()=>{
+ const store=new Store();await auditStep(args(store,async()=>page(['a'],'next',2)));
+ store.value.inflightUntil='2026-10-13T00:00:30Z';
+ assert.equal((await auditStep(args(store,async()=>{throw Error('no call')}))).status,'reader_busy_retry');
+ assert.equal((await auditStep({...args(store,async()=>page(['b'],null,2)),now:()=> '2026-10-13T00:00:31Z'})).status,'reading');
 });
