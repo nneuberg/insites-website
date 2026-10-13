@@ -48,6 +48,7 @@ export function qualification(s,organization){
  if(!/^[A-Z]{2}$/.test(s.recipient.country))return 'country_invalid';
  return null;
 }
+function officeQualification(s,snapshot,now){if(!snapshot.officeHash)return null;const a=s.offices?.[hash(snapshot.agentId)];return !a||a.officeHash!==snapshot.officeHash||a.doNotMail!==false||a.verifiedAt>now||now-a.verifiedAt>30*86400000?'office_review_required':null;}
 const grams=t=>new Set(Array.from({length:Math.max(0,t.length-2)},(_,i)=>t.slice(i,i+3)));
 export function similar(a,b){
  if(a===b)return true;const x=grams(a),y=grams(b);if(!x.size||!y.size)return false;
@@ -62,8 +63,9 @@ export async function importHistory(store,{agentId,rows,complete,evidence},now=D
  if(!agentId||!Array.isArray(rows)||rows.length>5000||!evidence)throw Error('invalid_history');
  return mutate(store,s=>{
   for(const row of rows){if(!row.id||typeof row.text!=='string'||!normalize(row.text)||row.text.length>1000)throw Error('invalid_history_row');
-   for(const j of Object.values(s.jobs))if(j.snapshot.agentId===agentId&&[j.draftText,j.approvedText].filter(Boolean).some(t=>similar(normalize(t),normalize(row.text)))){j.status='HOLD';j.error='late_history_collision';revoke(j);changed(j,now);}
-   reserve(s,agentId,row.text,'history:'+row.id);
+   const own=s.jobs[row.id];const self=own?.snapshot.agentId===agentId&&[own.draftText,own.approvedText,own.sentText].includes(row.text)?own.id:null;
+   for(const j of Object.values(s.jobs))if(j.id!==self&&j.snapshot.agentId===agentId&&[j.draftText,j.approvedText].filter(Boolean).some(t=>similar(normalize(t),normalize(row.text)))){j.status='HOLD';j.error='late_history_collision';revoke(j);changed(j,now);}
+   reserve(s,agentId,row.text,self||'history:'+row.id);
   }
   for(const j of Object.values(s.jobs))if(j.snapshot.agentId===agentId){j.historyReconciled=complete===true;if(!complete){j.status='HOLD';j.error='history_unreconciled';revoke(j);}changed(j,now);}
   s.historyReady[hash(agentId)]={complete:complete===true,evidence,at:now};audit(s,agentId,'history_import',now);return {status:'history_recorded'};
@@ -72,17 +74,24 @@ export async function importHistory(store,{agentId,rows,complete,evidence},now=D
 export async function stage(store,{eventId,snapshot,candidates,organization},now=Date.now()){
  return mutate(store,s=>{
   const event=s.events[eventId];if(!event)throw Error('event_missing');
-  if(event.status==='DONE')return {unchanged:true,status:'duplicate',jobId:event.jobId};
   if(!Array.isArray(candidates))throw Error('invalid_candidates');
   if(!snapshot?.inspectionId||!snapshot?.agentId)throw Error('stable_ids_required');
   const id=fingerprint([organization,snapshot.inspectionId,snapshot.agentId,'thank-you-v1']);
-  if(s.jobs[id]){event.status='DONE';event.jobId=id;return {status:'duplicate',jobId:id};}
-  let reason=qualification(snapshot,organization);
+  if(s.jobs[id]){
+   const j=s.jobs[id];event.status='DONE';event.jobId=id;
+   if(fingerprint(j.snapshot)!==fingerprint(snapshot)){
+    j.priorSnapshots??=[];j.priorSnapshots.push({revision:j.revision,snapshot:j.snapshot,status:j.status,error:j.error,approval:j.approval,draftText:j.draftText});
+    j.snapshot=structuredClone(snapshot);j.status='HOLD';j.error=qualification(snapshot,organization)||'snapshot_changed_review_required';revoke(j);changed(j,now);audit(s,id,'snapshot_changed_approval_revoked',now);
+    return {status:'HOLD',jobId:id};
+   }
+   return {status:'duplicate',jobId:id};
+  }
+  let reason=qualification(snapshot,organization)||officeQualification(s,snapshot,now);
   if(!s.historyReady[hash(snapshot.agentId)]?.complete)reason='history_unreconciled';
-  if(Object.values(s.jobs).some(j=>j.snapshot.inspectionId===snapshot.inspectionId&&j.snapshot.agentId!==snapshot.agentId))reason='changed_agent_manual_review';
+  for(const j of Object.values(s.jobs))if(j.snapshot.organizationId===organization&&j.snapshot.inspectionId===snapshot.inspectionId&&j.snapshot.agentId!==snapshot.agentId){reason='changed_agent_manual_review';j.status='HOLD';j.error=reason;revoke(j);changed(j,now);audit(s,j.id,'agent_changed_approval_revoked',now);} 
   const draft=reason?null:candidates.slice(0,3).find(t=>distinct(s,snapshot.agentId,t,id))||null;
   if(draft)reserve(s,snapshot.agentId,draft,id);
-  s.jobs[id]={id,eventId,historyReconciled:s.historyReady[hash(snapshot.agentId)]?.complete===true,snapshot:structuredClone(snapshot),status:reason?'HOLD':draft?'AWAITING_APPROVAL':'MANUAL_REVIEW',error:reason||(!draft?'copy_exhausted':null),draftText:draft,approvedText:null,sentText:null,sentAt:null,approval:null,revision:1,createdAt:now,updatedAt:now,projectionPending:true,idempotencyKey:id,externalOrderNumber:'insites-'+id};
+  s.jobs[id]={id,eventId,automationInstanceId:event.instance,historyReconciled:s.historyReady[hash(snapshot.agentId)]?.complete===true,snapshot:structuredClone(snapshot),status:reason?'HOLD':draft?'AWAITING_APPROVAL':'MANUAL_REVIEW',error:reason||(!draft?'copy_exhausted':null),draftText:draft,approvedText:null,sentText:null,sentAt:null,approval:null,revision:1,createdAt:now,updatedAt:now,projectionPending:true,idempotencyKey:id,externalOrderNumber:'insites-'+id};
   event.status='DONE';event.jobId=id;audit(s,id,'staged',now);return {status:s.jobs[id].status,jobId:id};
  });
 }
@@ -91,9 +100,9 @@ export async function review(store,{jobId,revision,text,artwork,reviewedFingerpr
  return mutate(store,s=>{
   const j=s.jobs[jobId];if(!j||!['AWAITING_APPROVAL','APPROVED','MANUAL_REVIEW'].includes(j.status))throw Error('not_reviewable');
   if(j.revision!==revision)throw Error('stale_revision');
-  if(qualification(j.snapshot,j.snapshot.organizationId)||!s.historyReady[hash(j.snapshot.agentId)]?.complete)throw Error('qualification_changed');
+  if(qualification(j.snapshot,j.snapshot.organizationId)||officeQualification(s,j.snapshot,now)||!s.historyReady[hash(j.snapshot.agentId)]?.complete)throw Error('qualification_changed');
   if(!distinct(s,j.snapshot.agentId,text,jobId))throw Error('copy_collision');
-  if(approve&&(!artwork?.id||!artwork?.revision||!artwork?.templateId||!equal(reviewFingerprint(j,text,artwork),reviewedFingerprint)))throw Error('review_changed');
+  if(approve&&(!artwork?.id||!artwork?.revision||!artwork?.templateId||!Number.isInteger(artwork?.messagePage)||artwork.messagePage<1||!equal(reviewFingerprint(j,text,artwork),reviewedFingerprint)))throw Error('review_changed');
   reserve(s,j.snapshot.agentId,text,jobId);revoke(j);
   if(approve){j.approvedText=text;j.approval={by:'Neal',at:now,artwork:structuredClone(artwork),fingerprint:reviewedFingerprint};j.status='APPROVED';}
   else{j.draftText=text;j.status='AWAITING_APPROVAL';}
@@ -103,3 +112,20 @@ export async function review(store,{jobId,revision,text,artwork,reviewedFingerpr
 export async function readState(store){return (await store.getWithMetadata('state',{type:'json'}))?.data||initial();}
 export async function acknowledge(store,{jobId,revision}){return mutate(store,s=>{const j=s.jobs[jobId];if(!j||j.revision!==revision)throw Error('stale_projection');j.projectionPending=false;return {status:'acknowledged'};});}
 export function dispatch(){throw Error('LIVE_CARD_DELIVERY_NOT_IMPLEMENTED_OR_AUTHORIZED');}
+export async function reevaluate(store,{jobId,revision,snapshot,candidates,organization},now=Date.now()){
+ return mutate(store,s=>{
+  const j=s.jobs[jobId];
+  if(!j||j.status!=='HOLD'||j.orderId||j.sentAt||j.sentText)throw Error('not_recoverable');
+  if(j.revision!==revision)throw Error('stale_revision');
+  if(!snapshot||!Array.isArray(candidates)||snapshot.agentId!==j.snapshot.agentId||snapshot.inspectionId!==j.snapshot.inspectionId||snapshot.organizationId!==j.snapshot.organizationId)throw Error('recovery_identity_changed');
+  let reason=qualification(snapshot,organization)||officeQualification(s,snapshot,now);
+  if(s.historyReady[hash(snapshot.agentId)]?.complete!==true)reason='history_unreconciled';
+  if(Object.values(s.jobs).some(other=>other.id!==j.id&&other.snapshot.inspectionId===snapshot.inspectionId&&other.snapshot.agentId!==snapshot.agentId))reason='changed_agent_manual_review';
+  j.priorSnapshots??=[];j.priorSnapshots.push({revision:j.revision,snapshot:j.snapshot,status:j.status,error:j.error,approval:j.approval,draftText:j.draftText});
+  j.snapshot=structuredClone(snapshot);j.historyReconciled=s.historyReady[hash(snapshot.agentId)]?.complete===true;revoke(j);
+  const draft=reason?null:candidates.slice(0,3).find(t=>distinct(s,snapshot.agentId,t,j.id))||null;
+  if(draft)reserve(s,snapshot.agentId,draft,j.id);
+  j.draftText=draft;j.status=reason?'HOLD':draft?'AWAITING_APPROVAL':'MANUAL_REVIEW';j.error=reason||(!draft?'copy_exhausted':null);changed(j,now);audit(s,j.id,'hold_reevaluated_approval_revoked',now);
+  return {status:j.status,jobId:j.id,deliveryEnabled:false};
+ });
+}
