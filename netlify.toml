@@ -1,6 +1,4 @@
 [build]
-  # Disabled card draft: remove only with explicit deployment approval.
-  ignore = "exit 0"
   publish = "."
   functions = "netlify/functions"
 
@@ -43,4 +41,3 @@
   from = "/api/referral-share"
   to = "/.netlify/functions/referral-share"
   status = 200
-
