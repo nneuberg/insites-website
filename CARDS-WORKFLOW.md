@@ -169,7 +169,7 @@ https://api.card.ly/openapi/en-AU/2.2.0/json (link observed; specification not f
 
 ## Synthetic checks and deployment boundary
 
-Run `node --test tests/cards.test.mjs` (34 synthetic Node tests). Tests use an in-memory CAS store,
+Run `node --test tests/cards.test.mjs` (37 synthetic Node tests). Tests use an in-memory CAS store,
 synthetic keys/IDs/addresses and injected HTTP mocks. They exercise concurrent
 receipt/draft collisions, wrong signatures/organization, failure before ack,
 copy exhaustion, approval edits, incomplete history, permissions, provider test
@@ -199,7 +199,7 @@ and complete Cardly login. Account linkage must then be verified read-only.
 The earlier Hive form was UNSAVED and its tab closed; no persistent automation
 was created. The preparation screenshot is evidence of a proposal only.
 
-34 Node tests validate this draft using synthetic in-memory CAS and fixture reads.
+37 Node tests validate this draft using synthetic in-memory CAS and fixture reads.
 The earlier Python scaffold separately passed 51 tests; those do not validate
 this implementation. No real SDK/Blobs concurrent-write or ambiguous-write
 integration test has run. Required before activation: authorized nonsending
@@ -207,3 +207,5 @@ SDK integration test, deployment packaging test, real mapping fixture checks,
 browser validation of the owner page, and serialized Sheets round-trip test.
 The local card-proof file browser preview was policy-denied for file protocol;
 no alternate browser/localhost workaround was attempted.
+
+Owner review preparation uses a monotonic generation guard. Input/load changes invalidate pending preparations; out-of-order responses are discarded, failed current requests invalidate state, and approval rechecks current exact text/artwork/job revision. Regression tests cover these races.
