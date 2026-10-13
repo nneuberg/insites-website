@@ -6,12 +6,11 @@ const hash=value=>createHash('sha256').update(JSON.stringify(canonical(value))).
 const sorted=rows=>[...rows].sort((a,b)=>a.id.localeCompare(b.id));
 const resources=['contacts','agencies'];
 const empty=()=>({cursor:null,total:null,seenCursors:[],rows:[],pages:0});
-const addressFields=['address','address_line_2','city','state','zip','country'];
+const addressFields=['address','address_line2','city','state','zip','country'];
 const agentTags=new Set(['broker','1st time buying agent','repeat buying agent','super buying agent',
  'vip buying agent','absent buying agent','absent selling agent','new selling agent','repeat selling agent']);
-const knownRoles=new Set(['Agent','Buyer Agent','Seller Agent','Listing Agent','Customer']);
 export function reconciliationRecord(resource,row){
- const fields=resource==='contacts'?['id','first_name','last_name','email','phone','agency_id','updated_at',...addressFields]
+ const fields=resource==='contacts'?['id','first_name','last_name','email','phone','agency_id','agency_name','business_name','updated_at',...addressFields]
   :['id','name','phone','updated_at',...addressFields];
  const result={};
  for(const key of fields)if(Object.hasOwn(row,key)){
@@ -24,9 +23,15 @@ export function reconciliationRecord(resource,row){
    result.uses_agency_address=row.uses_agency_address;
   }
   if(!Object.hasOwn(result,'agency_id')&&row.agency&&typeof row.agency.id==='string')result.agency_id=row.agency.id;
-  result.roles=Array.isArray(row.roles)?[...new Set(row.roles.filter(r=>knownRoles.has(r)))].sort():[];
-  // Preserve only specific agent/broker classification markers, not unrelated tags.
-  result.agent_markers=Array.isArray(row.tags)?[...new Set(row.tags.map(t=>typeof t==='string'?t:t?.name)
+  // Preserve role enum values verbatim; do not silently lose roles by guessing
+  // their spelling/case. Missing roles stay absent, distinct from verified [].
+  if(Object.hasOwn(row,'roles')){
+   if(!Array.isArray(row.roles)||row.roles.some(r=>typeof r!=='string'||r.length>128))throw Error('Invalid roles');
+   result.roles=[...new Set(row.roles)].sort();
+  }
+  // Tag names are unverified organization labels: review hints, never proof of
+  // agent status or authorization to add a row. Exclude unrelated tag content.
+  result.candidate_agent_tags=Array.isArray(row.tags)?[...new Set(row.tags.map(t=>typeof t==='string'?t:t?.name)
    .filter(t=>typeof t==='string').map(t=>t.trim().toLowerCase()).filter(t=>agentTags.has(t)))].sort():[];
  }
  return result;
