@@ -74,3 +74,5 @@
 @media(max-width:650px){.appointment-notes{font-size:12px}}
 
 .address-credit{font-size:12px;line-height:1.4;font-weight:400;font-style:normal;letter-spacing:normal;color:#5e5e5e;white-space:nowrap}
+
+.appointment-policy{border-left:2px solid #ad8e3d;padding:4px 0 4px 16px;margin:24px 0 30px}.appointment-policy .photo-policy{border:0;padding:0;margin:0}.appointment-policy .appointment-notes{margin:10px 0 0;padding-left:16px}.appointment-policy .appointment-notes li:last-child{margin-bottom:0}
