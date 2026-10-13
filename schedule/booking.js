@@ -13,15 +13,17 @@ function update() {
   const hasPrimary = selectedIds('media_service').some(id => catalog.services.find(service => service.id === id)?.priceCents !== null);
   for (const service of catalog.services.filter(service => service.priceCents === null)) {
     const input = form.querySelector(`input[value="${service.id}"]`);
-    const unavailable = (service.id !== 'floor-plan' && !hasPrimary) || (service.id === 'exterior' && selectedIds('media_service').includes('photography'));
+    const unavailable = (service.id === 'exterior' && selectedIds('media_service').includes('photography'));
     input.disabled = unavailable;
     if (unavailable) input.checked = false;
   }
-  const pendingFloorPlan = !hasPrimary && selectedIds('media_service').includes('floor-plan');
-  submitStatus.textContent = pendingFloorPlan ? 'Floor Plan is an add-on. Choose another media service to complete your request.' : '';
-  if (pendingFloorPlan) {
-    document.querySelector('#booking-lines').textContent = 'Floor Plan — ' + money(catalog.services.find(service => service.id === 'floor-plan').addonPriceCents) + ' (add-on)';
-    document.querySelector('#booking-total').textContent = money(catalog.services.find(service => service.id === 'floor-plan').addonPriceCents);
+  const pendingAddons = !hasPrimary && selectedIds('media_service').length > 0;
+  submitStatus.textContent = pendingAddons ? 'These are add-on services. Choose another media service to complete your request.' : '';
+  if (pendingAddons) {
+    const selected = catalog.services.filter(service => selectedIds('media_service').includes(service.id));
+    const lines = document.querySelector('#booking-lines');lines.replaceChildren();
+    selected.forEach(service => {const p = document.createElement('p');p.textContent = service.name + ' — ' + money(service.addonPriceCents) + ' (add-on)';lines.append(p);});
+    document.querySelector('#booking-total').textContent = money(selected.reduce((sum,service)=>sum+service.addonPriceCents,0));
     submitButton.disabled = true;return;
   }
   const quote = selection();
