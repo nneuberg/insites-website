@@ -37,8 +37,8 @@ export async function runOwnerTest({engine,store,env=process.env,fetcher=fetch,n
   state.sent=true;state.sentAt=now();await store.setJSON(KEY,state);return {sent:true,awaitingFeedback:true};
  });
 }
-export default async()=>{
- try{const result=await runOwnerTest({engine:runtime(),store:reviewStore()});console.log('Owner review test',JSON.stringify(result));return response(result);}
+export default async(_request,context)=>{
+ try{const result=await runOwnerTest({engine:runtime(context),store:reviewStore(context),env:{...process.env,CONTEXT:context?.deploy?.context||process.env.CONTEXT}});console.log('Owner review test',JSON.stringify(result));return response(result);}
  catch(error){console.error('Owner review test requires retry:',error.message);return response({error:'Owner test requires retry'},503);}
 };
 export const config={schedule:'*/5 * * * *'};
