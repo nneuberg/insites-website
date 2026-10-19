@@ -117,7 +117,14 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
    if(!row.isTest&&env.REVIEW_ENABLED!=='true')throw Error('Review processing is paused');
    if(now()>=row.expiresAt)throw Error('Review link expired');
    if(!Number.isInteger(input.rating)||input.rating<1||input.rating>5||typeof input.feedback!=='string'||input.feedback.length>4000)throw Error('Invalid feedback');
-   if(row.ratedAt){if(row.rating!==input.rating)throw Error('Feedback already recorded');return {saved:true};}
+   if(row.ratedAt){
+    const feedback=input.feedback.trim(),revision=row.feedbackRevision||1;
+    if(row.rating===input.rating&&row.feedback===feedback)return {saved:true};
+    if(input.revision!==revision)throw Object.assign(Error('Feedback changed. Reload this page before editing.'),{status:409});
+    row.rating=input.rating;row.feedback=feedback;row.feedbackRevision=revision+1;row.feedbackUpdatedAt=now();
+    await save(row);return {saved:true};
+   }
+   if(input.revision!==undefined&&input.revision!==0)throw Object.assign(Error('Feedback changed. Reload this page before editing.'),{status:409});
    row.rating=input.rating;row.feedback=input.feedback.trim();row.ratedAt=now();row.endedAt=now();await save(row);
    try{await finish(row);}catch{/* Stored feedback is retried by the worker. */}
    return {saved:true};

@@ -52,11 +52,11 @@ test('Mailchimp Google reviewed tag stops the next reminder',async()=>{
  for(const m of s.members.values())m.tags.push({name:'google reviewed'});s.advance(3);await s.engine.process(r.token);
  assert.equal(sends(s).length,1);assert((await s.engine.get(r.token)).googleReviewedAt);
 });
-test('feedback repeated with same rating is idempotent; changed rating rejected',async()=>{
+test('identical feedback is idempotent; edits require the current revision',async()=>{
  const s=setup();await s.engine.enroll(inspection);const r=customer(s);
  await s.engine.feedback(r.token,{rating:1,feedback:'fixture'});const count=s.calls.length;
  await s.engine.feedback(r.token,{rating:1,feedback:'fixture'});assert.equal(s.calls.length,count);
- await assert.rejects(()=>s.engine.feedback(r.token,{rating:5,feedback:''}),/already recorded/);
+ await assert.rejects(()=>s.engine.feedback(r.token,{rating:5,feedback:''}),/Reload/);
 });
 test('invalid feedback does not stop or alter a request',async()=>{
  const s=setup();await s.engine.enroll(inspection);const r=customer(s);
