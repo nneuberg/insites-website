@@ -27,17 +27,22 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   }
  }
  async function finish(row){
+  // Test feedback is stored locally but must never change real audience tags.
+  if(row.isTest){row.finishSynced=true;await save(row);return;}
+  if(env.REVIEW_ENABLED!=='true')return;
   await mc(row,{tags:[{name:'REVIEW:PENDING',status:'inactive'},...(row.ratedAt?[{name:'feedback received',status:'active'}]:[]),...(row.googleReviewedAt?[{name:'google reviewed',status:'active'}]:[])]},'POST','/tags');
   if(row.role==='Customer'&&!row.isTest)await mc(row,{merge_fields:referralDates(row.endedAt)});
   row.finishSynced=true;await save(row);
  }
  async function syncHiveTag(row){
+  if(row.isTest||env.REVIEW_ENABLED!=='true')return;
   const contact=await hive('contacts/'+encodeURIComponent(row.contactId));
   const tags=[...new Set([...(contact.tags||[]).map(t=>t.name),'Google Reviewed'])];
   await hive('contacts/'+encodeURIComponent(row.contactId),{tags});
   row.hiveTagSynced=true;await save(row);
  }
  async function confirmGoogle(token,review){
+  if(env.REVIEW_ENABLED!=='true')throw Error('Review processing is paused');
   if(!validToken(token)||!review?.reviewId)throw Error('Invalid match');
   const first=await get(token);if(!first||first.isTest)throw Error('Review request not found');
   return locked('google:'+review.reviewId,()=>locked(first.role+':'+first.email,async()=>{
@@ -94,12 +99,13 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   return {added};
  }
  async function process(token){
+  if(env.REVIEW_ENABLED!=='true')return;
   const initial=await get(token);if(!initial)return;
   return locked(initial.role+':'+initial.email,async()=>{
    const row=await get(token);
+   if(row.isTest)return;
    if(row.endedAt){if(!row.finishSynced&&!row.suppressed)await finish(row);if(row.googleReviewedAt&&!row.hiveTagSynced)await syncHiveTag(row);return;}
    if(now()>=row.expiresAt){row.endedAt=row.expiresAt;await save(row);await finish(row);return;}
-   if(row.isTest)return;
    const stage=dueStage(row,now());if(stage!==null&&stage>=0)await send(row,stage);
   });
  }
@@ -107,7 +113,9 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   if(!validToken(token))throw Error('Invalid review link');
   const first=await get(token);if(!first)throw Error('Review not found');
   return locked(first.role+':'+first.email,async()=>{
-   const row=await get(token);if(now()>=row.expiresAt)throw Error('Review link expired');
+   const row=await get(token);
+   if(!row.isTest&&env.REVIEW_ENABLED!=='true')throw Error('Review processing is paused');
+   if(now()>=row.expiresAt)throw Error('Review link expired');
    if(!Number.isInteger(input.rating)||input.rating<1||input.rating>5||typeof input.feedback!=='string'||input.feedback.length>4000)throw Error('Invalid feedback');
    if(row.ratedAt){if(row.rating!==input.rating)throw Error('Feedback already recorded');return {saved:true};}
    row.rating=input.rating;row.feedback=input.feedback.trim();row.ratedAt=now();row.endedAt=now();await save(row);
