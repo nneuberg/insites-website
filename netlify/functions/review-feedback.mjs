@@ -1,9 +1,11 @@
+import {getStore} from '@netlify/blobs';
+import {testRuntime} from '../lib/review-test-fixture.mjs';
 import {runtime,response} from '../lib/review-runtime.mjs';
 import {validToken} from '../lib/review-policy.mjs';
 export default async(request,context)=>{
  const url=new URL(request.url),token=url.searchParams.get('token');
  if(!validToken(token))return response({error:'This review link is invalid.'},400);
- const engine=runtime(context);
+ const engine=await testRuntime(token,()=>getStore({name:'insites-isolated-review-test-20261019',consistency:'strong'}))||runtime(context);
  try{
   if(request.method==='GET'){
    const row=await engine.get(token);if(!row)return response({error:'This review link was not found.'},404);
