@@ -23,7 +23,7 @@ Commit 4352a55808434e57161fdcf87a067bee7296c4b2 deployed successfully as 6ad6b0c
 
 ## Not yet active / remaining work
 
-1. Agree completion rule (published report plus elapsed scheduled end, versus manual confirmation). Exact full-inspection service IDs must be configured from the account catalog.
+1. Completion rule approved: an active inspection with a published report and elapsed scheduled end counts as completed. The first observation is recorded, never backdated to the scheduled end; repeat checks retain that timestamp. An unpublished report, cancellation, deletion, or future end clears completion. A rescheduled end later than the saved observation starts a fresh observation. The ledger waits 24 elapsed hours after the later of completion observation and first observed full payment. Exact full-inspection service IDs still need configuration from the account catalog.
 2. New-client verification across migrated history and refund/dispute evidence need a documented source or an explicit manual approval path. Do not manufacture false values for absent provider fields.
 3. Finish the queue consumer and payment polling -> ledger reconciliation; webhook queue alone does not update the sheet. Before allowing rewards, fix/test ledger behavior when a previously used code is removed or ownership/client changes, and maintain the 24-hour delay from the later of completion and first observed full payment.
 4. Register a dedicated Hive webhook endpoint only when its consumer is ready. Set REFERRAL_HIVE_WEBHOOK_SECRET, HIVE_ORGANIZATION_ID and REFERRAL_HIVE_WEBHOOK_ENABLED=true. Keep disabled until the dedicated signing secret is saved; do not reuse the card/review secret. Signing-secret creation/entry requires user handoff in the browser.
