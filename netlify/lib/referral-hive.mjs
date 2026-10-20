@@ -40,6 +40,7 @@ export function matchReferral(i,snapshot,options={}){
  const old=(snapshot.uses||[]).find(u=>u['Hive Inspection ID']===facts.id);
  if(matches.length!==1)return {matched:false,inspectionId:facts.id,hold:old?'Existing code removed or attribution ambiguous':matches.length?'Multiple assigned referral codes':null};
  const owner=matches[0],holds=[];
+ if(old&&(old.Code!==owner.Code||String(old['Client ID'])!==String(facts.clientId)))holds.push('Existing code or customer changed; review attribution');
  if(!facts.clientId||!facts.clientEmail)holds.push('Exactly one identified customer required');
  if(String(facts.clientEmail||'').trim().toLowerCase()===String(owner['Referrer Email']).trim().toLowerCase())holds.push('Self referral');
  if(!Number.isFinite(Date.parse(facts.bookedAt))||!Number.isFinite(Date.parse(owner['Assigned At']))||Date.parse(facts.bookedAt)<=Date.parse(owner['Assigned At']))holds.push('Code must precede booking');
@@ -50,7 +51,7 @@ export function matchReferral(i,snapshot,options={}){
  return {matched:true,inspectionId:facts.id,code:owner.Code,facts,holds,rewardReady:false};
 }
 export async function auditReferrals({read,snapshot,serviceIds=[],maxPages=5,pageSize=20,now=Date.now()}={}){
- const results=[],seen=new Set();let cursor=null,pages=0;
+ const results=[],seen=new Set(),services=new Map();let cursor=null,pages=0;
  do{
   const query=new URLSearchParams({limit:String(pageSize)});if(cursor)query.set('cursor',cursor);
   const page=await read('inspections?'+query);
@@ -58,10 +59,11 @@ export async function auditReferrals({read,snapshot,serviceIds=[],maxPages=5,pag
   for(const item of page.data){
    if(!idOK(item.id))throw Error('Invalid inspection ID');if(seen.has(item.id))continue;seen.add(item.id);
    const detail=await read('inspections/'+encodeURIComponent(item.id));
+   for(const service of detail.services||[])if(service.id&&service.name)services.set(service.id,service.name);
    const result=matchReferral(detail,snapshot,{serviceIds,now});
    if(result.matched||result.hold)results.push(result);
   }
   const next=page.next_cursor||null;if(next&&next===cursor)throw Error('Repeated Hive cursor');cursor=next;pages++;
  }while(cursor&&pages<maxPages);
- return {read:seen.size,pages,complete:!cursor,nextCursor:cursor,results};
+ return {read:seen.size,pages,complete:!cursor,nextCursor:cursor,results,observedServices:[...services].map(([id,name])=>({id,name}))};
 }
