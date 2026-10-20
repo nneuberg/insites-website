@@ -1,7 +1,7 @@
 {
-  "enabled": true,
+  "enabled": false,
   "subscriptionAuditPassed": true,
   "testJourneyRestricted": true,
-  "startsAt": 1792505680105,
-  "expiresAt": 1792512880105
+  "startsAt": null,
+  "expiresAt": null
 }
