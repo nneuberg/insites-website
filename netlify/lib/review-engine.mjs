@@ -37,8 +37,11 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  async function syncHiveTag(row){
   if(row.isTest||env.REVIEW_ENABLED!=='true')return;
   const contact=await hive('contacts/'+encodeURIComponent(row.contactId));
-  const tags=[...new Set([...(contact.tags||[]).map(t=>t.name),'Google Reviewed'])];
-  await hive('contacts/'+encodeURIComponent(row.contactId),{tags});
+  const tags=(contact.tags||[]).map(t=>t.name);
+  // Reuse the verified Hive taxonomy spelling; never add a case-only duplicate.
+  if(!tags.some(name=>name.toLowerCase()==='google reviewed')){
+   await hive('contacts/'+encodeURIComponent(row.contactId),{tags:[...tags,'google reviewed']});
+  }
   row.hiveTagSynced=true;await save(row);
  }
  async function confirmGoogle(token,review){
