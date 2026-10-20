@@ -50,10 +50,15 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
    if(claim&&claim.token!==token)throw Error('This Google review is already assigned to another person');
    if(row.googleReviewId&&row.googleReviewId!==review.reviewId)throw Error('This contact already has a confirmed review');
    await store.setJSON(claimKey,{token},{onlyIfNew:true});
-   row.googleReviewId=review.reviewId;row.googleReviewedAt=row.googleReviewedAt||now();row.googleReview=review;
-   // Confirmation may replace an earlier feedback-end date, as agreed for verified reviews.
-   if(!row.googleConfirmationEndedAt)row.endedAt=now();row.googleConfirmationEndedAt=row.endedAt;
-   row.finishSynced=false;await save(row);await finish(row);await syncHiveTag(row);
+   if(!row.googleReviewId){
+    row.googleReviewId=review.reviewId;row.googleReviewedAt=row.googleReviewedAt||now();row.googleReview=review;
+    // Confirmation may replace an earlier feedback-end date once.
+    if(!row.googleConfirmationEndedAt)row.endedAt=now();row.googleConfirmationEndedAt=row.endedAt;
+    row.finishSynced=false;await save(row);
+   }
+   // Resume incomplete work without replaying already acknowledged provider writes.
+   if(!row.finishSynced)await finish(row);
+   if(!row.hiveTagSynced)await syncHiveTag(row);
    return {confirmed:true};
   }));
  }
