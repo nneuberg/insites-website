@@ -1,3 +1,4 @@
+import {inReviewScope} from './review-scope.mjs';
 import {randomBytes,createHash} from 'node:crypto';
 import {DAY,ORIGIN,escapeHTML} from './review-policy.mjs';
 export function googleSync({store,engine,env=process.env,fetcher=fetch,now=()=>Date.now()}){
@@ -16,7 +17,7 @@ export function googleSync({store,engine,env=process.env,fetcher=fetch,now=()=>D
   const baseline=await store.get('google-baseline',{type:'json'});
   if(!baseline){await store.setJSON('google-baseline',{since:now()});return {baselineCreated:true};}
   const rows=[];
-  for await(const page of store.list({prefix:'requests/',paginate:true}))for(const blob of page.blobs){const row=await store.get(blob.key,{type:'json'});if(!row.isTest&&!row.googleReviewedAt&&row.createdAt>=now()-30*DAY)rows.push(row);}
+  for await(const page of store.list({prefix:'requests/',paginate:true}))for(const blob of page.blobs){const row=await store.get(blob.key,{type:'json'});if(inReviewScope(row,env,blob.key)&&!row.isTest&&!row.googleReviewedAt&&row.createdAt>=now()-30*DAY)rows.push(row);}
   let notified=0;
   for(const review of data.reviews||[]){
    const created=Date.parse(review.createTime);if(!review.reviewId||!Number.isFinite(created)||created<baseline.since)continue;
@@ -26,6 +27,8 @@ export function googleSync({store,engine,env=process.env,fetcher=fetch,now=()=>D
     const candidates=rows.filter(r=>r.createdAt<=created&&created-r.createdAt<=30*DAY).sort((a,b)=>(b.ratedAt||b.createdAt)-(a.ratedAt||a.createdAt)).slice(0,10);
     if(!candidates.length)return;
     if(!notice){notice={review,options:candidates.map(r=>({token:randomBytes(24).toString('hex'),requestToken:r.token})),createdAt:now()};await store.setJSON(key,notice);}
+    notice.options=notice.options.filter(o=>rows.some(r=>r.token===o.requestToken));
+    if(!notice.options.length)return;
     for(const option of notice.options)await store.setJSON('matches/'+option.token,{requestToken:option.requestToken,review:notice.review,expiresAt:notice.createdAt+14*DAY},{onlyIfNew:true});
     const html='<h2>New Google review — please verify the person</h2><p><strong>'+escapeHTML(review.reviewer?.displayName||'Anonymous')+'</strong> · '+escapeHTML(review.starRating)+' · '+escapeHTML(time(created))+'</p><blockquote>'+escapeHTML(review.comment||'(No written comment)')+'</blockquote><p>Possible contacts are shown below. A similar name or date does not prove a match.</p>'+notice.options.map(o=>{const row=rows.find(r=>r.token===o.requestToken);if(!row)return '';return '<p><strong>'+escapeHTML(row.name)+'</strong> ('+escapeHTML(row.role)+')<br>'+escapeHTML(row.address)+'<br>Feedback: '+(row.ratedAt?escapeHTML(row.rating+' stars · '+time(row.ratedAt)):'Not submitted')+'<br><a href="'+ORIGIN+'/review-match/?token='+o.token+'">Review this possible match</a></p>';}).join('');
     const sent=await fetcher('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+env.RESEND_API_KEY,'Content-Type':'application/json','Idempotency-Key':'review-match-'+hash(review.reviewId)},body:JSON.stringify({from:'InSites Reviews <neal@insites.services>',to:['neal@insites.services'],subject:'Please verify a new InSites Google review',html}),signal:AbortSignal.timeout(12000)});

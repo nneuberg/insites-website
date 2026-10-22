@@ -1,6 +1,8 @@
+import {inReviewScope,excludedRequest} from './review-scope.mjs';
 import {createHash,randomBytes} from 'node:crypto';
 import {AUDIENCES,DAY,ORIGIN,eligibleRecipients,referralDates,dueStage,validToken} from './review-policy.mjs';
 export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.now()}){
+ const inLaunchScope=row=>inReviewScope(row,env);
  const hash=s=>createHash('sha256').update(s).digest('hex');
  const rowKey=t=>'requests/'+t;
  async function api(url,options={}){
@@ -31,7 +33,8 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   if(row.isTest){row.finishSynced=true;await save(row);return;}
   if(env.REVIEW_ENABLED!=='true')return;
   await mc(row,{tags:[{name:'REVIEW:PENDING',status:'inactive'},...(row.ratedAt?[{name:'feedback received',status:'active'}]:[]),...(row.googleReviewedAt?[{name:'google reviewed',status:'active'}]:[])]},'POST','/tags');
-  if(row.role==='Customer'&&!row.isTest)await mc(row,{merge_fields:referralDates(row.endedAt)});
+  // Review launch must not enroll clients into unrelated referral journeys.
+  if(env.REVIEW_REFERRALS_ENABLED==='true'&&row.role==='Customer'&&!row.isTest)await mc(row,{merge_fields:referralDates(row.endedAt)});
   row.finishSynced=true;await save(row);
  }
  async function syncHiveTag(row){
@@ -46,8 +49,8 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  }
  async function confirmGoogle(token,review){
   if(env.REVIEW_ENABLED!=='true')throw Error('Review processing is paused');
-  if(!validToken(token)||!review?.reviewId)throw Error('Invalid match');
-  const first=await get(token);if(!first||first.isTest)throw Error('Review request not found');
+  if(excludedRequest(token)||!validToken(token)||!review?.reviewId)throw Error('Invalid match');
+  const first=await get(token);if(!first||first.isTest||!inLaunchScope(first))throw Error('Review request not found');
   return locked('google:'+review.reviewId,()=>locked(first.role+':'+first.email,async()=>{
    const row=await get(token),claimKey='confirmed/'+hash(review.reviewId),claim=await store.get(claimKey,{type:'json'});
    if(claim&&claim.token!==token)throw Error('This Google review is already assigned to another person');
@@ -90,6 +93,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
    if(contact.tags?.some(t=>t.name.toLowerCase()==='google reviewed'))continue;
    // A person linked as an agent elsewhere must never receive a client reward invitation.
    const person={...original,role:contact.roles?.some(r=>['Buyer Agent','Seller Agent','Listing Agent','Agent'].includes(r))?'Agent':original.role};
+   if(env.REVIEW_CLIENT_ONLY==='true'&&person.role!=='Customer')continue;
    const identity=person.role+':'+person.email;
    await locked(identity,async()=>{
     const indexKey='people/'+hash(identity),index=await store.get(indexKey,{type:'json'});
@@ -107,22 +111,22 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   return {added};
  }
  async function process(token){
-  if(env.REVIEW_ENABLED!=='true')return;
+  if(env.REVIEW_ENABLED!=='true'||excludedRequest(token))return;
   const initial=await get(token);if(!initial)return;
   return locked(initial.role+':'+initial.email,async()=>{
    const row=await get(token);
-   if(row.isTest)return;
+   if(row.isTest||!inLaunchScope(row))return;
    if(row.endedAt){if(!row.finishSynced&&!row.suppressed)await finish(row);if(row.googleReviewedAt&&!row.hiveTagSynced)await syncHiveTag(row);return;}
    if(now()>=row.expiresAt){row.endedAt=row.expiresAt;await save(row);await finish(row);return;}
    const stage=dueStage(row,now());if(stage!==null&&stage>=0)await send(row,stage);
   });
  }
  async function feedback(token,input){
-  if(!validToken(token))throw Error('Invalid review link');
+  if(excludedRequest(token)||!validToken(token))throw Error('Invalid review link');
   const first=await get(token);if(!first)throw Error('Review not found');
   return locked(first.role+':'+first.email,async()=>{
    const row=await get(token);
-   if(!row.isTest&&env.REVIEW_ENABLED!=='true')throw Error('Review processing is paused');
+   if(!row.isTest&&(env.REVIEW_ENABLED!=='true'||!inLaunchScope(row)))throw Error('Review processing is paused');
    if(now()>=row.expiresAt)throw Error('Review link expired');
    if(!Number.isInteger(input.rating)||input.rating<1||input.rating>5||typeof input.feedback!=='string'||input.feedback.length>4000)throw Error('Invalid feedback');
    if(row.ratedAt){
@@ -150,7 +154,9 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   let processed=0;
   for await(const page of store.list({prefix:'requests/',paginate:true})){
    for(const blob of page.blobs){
+    if(excludedRequest(blob.key))continue;
     const token=blob.key.slice('requests/'.length),row=await get(token);
+    if(!inLaunchScope(row))continue;
     if(row.finishSynced&&(!row.googleReviewedAt||row.hiveTagSynced)||!row.endedAt&&now()<row.expiresAt&&dueStage(row,now())===null)continue;
     if(processed>=20)return {read,processed};await process(token);processed++;
    }
@@ -159,3 +165,4 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  }
  return {get,save,hive,mc,locked,enroll,process,feedback,confirmGoogle,run};
 }
+
