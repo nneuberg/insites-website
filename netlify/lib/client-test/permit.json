@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "baselineVerified": true,
+  "subscriptionAuditPassed": true,
+  "journeyRestricted": true,
+  "journeyVerified": true,
+  "journeyId": 9528,
+  "startsAt": 1792678703809,
+  "expiresAt": 1792685903809
+}
