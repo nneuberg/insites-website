@@ -14,8 +14,9 @@ export function automationEnvelope(body,headers,{organizationId,templateId}){
  const instance=signedTest?null:identifier(body.automation_instance_id);
  if(template!==identifier(templateId))throw Error('Unexpected template');
  if(organization!==identifier(organizationId))throw Error('Unexpected organization');
- if(signedTest){if(headers.get('x-automation-instance-id'))throw Error('Unexpected test instance');}
- else if(headers.get('x-automation-instance-id')!==instance)throw Error('Instance mismatch');
+ // Test instance is null in Hive's signed body; optional unsigned header is
+ // not an identity source. Tests deduplicate by signed-body digest only.
+ if(!signedTest&&headers.get('x-automation-instance-id')!==instance)throw Error('Instance mismatch');
  if(typeof body.event!=='string'||!/^[a-zA-Z0-9_. -]{1,100}$/.test(body.event)||!Number.isFinite(Date.parse(body.fired_at)))throw Error('Invalid event');
  if(!Array.isArray(body.payload_sections)||body.payload_sections.length>20||!body.payload_sections.every(s=>typeof s==='string'&&/^[a-zA-Z_ -]{1,50}$/.test(s)))throw Error('Invalid sections');
  if(!body.data||typeof body.data!=='object'||Array.isArray(body.data))throw Error('Invalid data');
@@ -31,7 +32,7 @@ export function payloadShape(value,depth=0){
 }
 export function createAutomationCapture({secret,organizationId,templateId,save,now=()=>Date.now()}){
  return async request=>{
-  const reply=(body,status)=>Response.json(body,{status,headers:{'Cache-Control':'no-store'}});
+  const reply=(body,status)=>Response.json(body,{status,headers:{'Cache-Control':'no-store','X-Review-Capture-Version':'strict-test-v2'}});
   if(request.method!=='POST')return reply({error:'Method not allowed'},405);
   if(!secret||!templateId||!organizationId)return reply({error:'Capture not configured'},503);
   if(Number(request.headers.get('content-length'))>262144)return reply({error:'Too large'},413);
@@ -41,7 +42,7 @@ export function createAutomationCapture({secret,organizationId,templateId,save,n
   const raw=Buffer.concat(parts);
   try{verifyHive(raw,request.headers,secret,now());}catch{return reply({error:'Invalid signature'},401);}
   let body,envelope;
-  try{body=JSON.parse(raw.toString('utf8'));envelope=automationEnvelope(body,request.headers,{organizationId,templateId});}catch{return reply({error:'Unexpected Automation envelope'},400);}
+  try{body=JSON.parse(raw.toString('utf8'));envelope=automationEnvelope(body,request.headers,{organizationId,templateId});}catch(error){const reasons=new Set(['Invalid envelope','Invalid identifier','Unexpected template','Unexpected organization','Instance mismatch','Invalid event','Invalid sections','Invalid data']);return reply({error:'Unexpected Automation envelope',reason:reasons.has(error.message)?error.message:'Invalid JSON'},400);}
   const record={...envelope,receivedAt:now(),mode:'capture-only',payloadSections:body.payload_sections,shape:payloadShape(body.data)};
   const key='automation-captures/'+createHash('sha256').update(envelope.organizationId+':'+envelope.templateId+':'+(envelope.signedTest?'test:'+createHash('sha256').update(raw).digest('hex'):envelope.instanceId)).digest('hex');
   try{await save(key,record,{onlyIfNew:true});}catch{return reply({error:'Capture unavailable'},503);}
