@@ -90,3 +90,12 @@ test('reward receipts can be retried without creating or changing a reward',()=>
  const receipt={useId:'HIVE-one',rewardId:'synthetic-only',sentAt:'2026-10-22T12:00:00.000Z',claimDeadline:'2027-04-22T12:00:00.000Z'};
  assert.equal(h.call('codeRewardSent',receipt).updated,true);assert.equal(h.call('codeRewardSent',receipt).updated,false);assert.throws(()=>h.call('codeRewardSent',{...receipt,rewardId:'another'}));
 });
+
+for(const refundState of ['UNKNOWN','YES'])test('Hive payment policy '+refundState+' preserves facts and requires 24h',()=>{
+ const h=harness();h.call('prepareShare',validateShare(input));use(h);
+ const row=h.tables.CodeUses[0];row['Dispute Or Refund']=refundState;
+ assert.throws(()=>h.call('reserveCodeReward',{useId:'HIVE-one'}));
+ row['Paid At']=new Date(Date.now()-2*86400000).toISOString();row['Reward Due At']=new Date(Date.now()-86400000).toISOString();
+ if(refundState==='YES')assert.throws(()=>h.call('reserveCodeReward',{useId:'HIVE-one'}));
+ else {assert.equal(h.call('reserveCodeReward',{useId:'HIVE-one'})['Reward State'],'RESERVED');assert.equal(h.tables.CodeUses[0]['Dispute Or Refund'],'UNKNOWN');}
+});

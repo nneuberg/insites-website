@@ -53,7 +53,7 @@ export function matchReferral(i,snapshot,options={}){
  if(facts.fullInspection!==true)holds.push('Full inspection service not verified');
  if(!facts.paid)holds.push('Full payment not verified');
  if(!facts.completed)holds.push('Published report and elapsed inspection end required');
- holds.push('New-client history not verified','Refund/dispute clearance unavailable');
+ holds.push('New-client history not verified'); // Owner accepts Hive fully paid + 24h despite unavailable refund data.
  return {matched:true,inspectionId:facts.id,code:owner.Code,facts,holds,rewardReady:false};
 }
 export async function auditReferrals({read,snapshot,serviceIds=[],maxPages=5,pageSize=20,now=Date.now()}={}){

@@ -49,7 +49,7 @@ function applyInspection(referral, inspection, now = new Date().toISOString()) {
  return r;
 }
 function rewardReady(r,now=Date.now()) {
- return r.Eligibility==='ELIGIBLE' && !r['Hold Reason'] && r['Service Verified']==='YES' && r['New Client Verified']==='YES' && r['Dispute Or Refund']==='NO' && !!r['Completed At'] && !!r['Paid At'] && !!r['Reward Due At'] && Date.parse(r['Reward Due At'])<=now && Date.parse(r['Last Verified At'])<=now && now-Date.parse(r['Last Verified At'])<300000 && !r['Reward ID'] && !r['Reward State'];
+ return r.Eligibility==='ELIGIBLE' && !r['Hold Reason'] && r['Service Verified']==='YES' && r['New Client Verified']==='YES' && referralPaymentPolicySatisfied(r) && !!r['Completed At'] && !!r['Paid At'] && !!r['Reward Due At'] && Date.parse(r['Reward Due At'])<=now && Date.parse(r['Last Verified At'])<=now && now-Date.parse(r['Last Verified At'])<300000 && !r['Reward ID'] && !r['Reward State'];
 }
 
 /* Bound Apps Script for the existing Referral Leads spreadsheet.
@@ -78,4 +78,11 @@ function writeRecord(name,record,key){var s=table(name),values=s.getDataRange().
 function dispatch(action,data){
  if(['holdCodeUse','codeSnapshot','prepareShare','prepareLowCodeAlert','lowCodeAlertSent','recordCodeUse','reserveCodeReward','codeRewardSent','codeRewardStatus','prepareFollowup','followupSent','unsubscribeFollowups'].includes(action))return codeDispatch(action,data);
  throw Error('Retired or unknown operation');
+}
+
+// Owner-approved 2026-10-22: Hive fully paid + 24h; missing refund data is not clearance.
+function referralPaymentPolicySatisfied(r) {
+ if(r['Dispute Or Refund']==='YES')return false;
+ if(r['Dispute Or Refund']==='NO')return true;
+ return r['Dispute Or Refund']==='UNKNOWN' && !!r['Hive Inspection ID'] && r['Use ID']==='HIVE-'+r['Hive Inspection ID'] && !!r['Paid At'];
 }

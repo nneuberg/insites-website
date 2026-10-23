@@ -106,7 +106,7 @@ function codeDispatch(action,data) {
   if(email(i.clientEmail)===email(code['Referrer Email']))r['Hold Reason']='Self referral';
   if(!Number.isFinite(Date.parse(code['Assigned At']))||!i.bookedAt||!Number.isFinite(Date.parse(i.bookedAt))||Date.parse(i.bookedAt)<=Date.parse(code['Assigned At']))r['Hold Reason']='Code must be assigned before booking';
   if(i.canceled!==false)r['Hold Reason']='Cancellation state not cleared';
-  if(r['Service Verified']!=='YES'||r['New Client Verified']!=='YES'||r['Dispute Or Refund']!=='NO')r['Hold Reason']='Eligibility facts need verification';
+  if(r['Service Verified']!=='YES'||r['New Client Verified']!=='YES'||!referralPaymentPolicySatisfied(r))r['Hold Reason']='Eligibility facts need verification';
   r['Reward Due At']=r['Paid At']&&r['Completed At']?new Date(Math.max(Date.parse(r['Paid At']),Date.parse(r['Completed At']))+86400000).toISOString():'';
   r['Last Verified At']=data.observedAt||now;r['Last Event ID']=data.eventId||'';r.Notes=data.evidence;
   if(!['REWARD SENT','REDEEMED','EXPIRED'].includes(r.Status))r.Status=r['Paid At']&&r['Completed At']?'PAID':r['Completed At']?'COMPLETED':'BOOKED';
