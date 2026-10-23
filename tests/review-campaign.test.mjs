@@ -20,7 +20,7 @@ function setup({contactTags=[{name:'Past Client'}],contactRoles=[]}={}){
   if(path.includes('/contacts/'))return Response.json({tags:contactTags,roles:contactRoles});
   return Response.json(inspection);
  };
- const engine=createEngine({store,fetcher,now:()=>clock,env:{HIVE_API_KEY:'mock-hive',MAILCHIMP_API_KEY:'mock-us5',REVIEW_ENABLED:'true',REVIEW_START_AFTER:'2026-10-12T00:00:00Z'}});
+ const engine=createEngine({store,fetcher,now:()=>clock,env:{HIVE_API_KEY:'mock-hive',MAILCHIMP_API_KEY:'mock-us5',REVIEW_ENABLED:'true',REVIEW_REFERRALS_ENABLED:'true',REVIEW_START_AFTER:'2026-10-12T00:00:00Z'}});
  return {engine,store,entries,members,calls,advance:days=>clock+=days*DAY};
 }
 test('unpaid, unsigned, unpublished, canceled, future and deleted inspections cannot enroll',()=>{
@@ -64,7 +64,7 @@ test('paused engine cannot enroll existing clients',async()=>{
 test('confirmed Google review adds Hive tag without removing existing tags and prevents double attribution',async()=>{
  const {engine,entries,calls}=setup();await engine.enroll(inspection);const rows=[...entries.values()].filter(v=>v.data.role).map(v=>v.data);
  await engine.confirmGoogle(rows[0].token,{reviewId:'google-1',starRating:'FIVE'});
- const patch=calls.find(c=>c.path.includes('/contacts/')&&c.method==='PATCH');assert.deepEqual(patch.body.tags,['Past Client','Google Reviewed']);
+ const patch=calls.find(c=>c.path.includes('/contacts/')&&c.method==='PATCH');assert.deepEqual(patch.body.tags,['Past Client','google reviewed']);
  assert(calls.some(c=>c.body?.tags?.some(t=>t.name==='google reviewed'&&t.status==='active')));
  await assert.rejects(()=>engine.confirmGoogle(rows[1].token,{reviewId:'google-1'}),/already assigned/);
 });

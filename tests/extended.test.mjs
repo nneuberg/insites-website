@@ -26,7 +26,7 @@ for(const role of ['Customer','Agent'])test(role+' confirmation writes exact Hiv
  await s.engine.confirmGoogle(r.token,{reviewId:'verified-'+role});await s.engine.confirmGoogle(r.token,{reviewId:'verified-'+role});
  const tags=s.calls.filter(c=>c.path.includes('/contacts/')&&c.method==='PATCH');
  assert(tags.every(c=>c.path.endsWith('/'+r.contactId)));
- assert(tags.every(c=>c.body.tags.includes('Past Client')&&c.body.tags.includes('Google Reviewed')));
+ assert(tags.every(c=>c.body.tags.includes('Past Client')&&c.body.tags.includes('google reviewed')));
  const mc=s.calls.filter(c=>c.body?.tags?.some(t=>t.name==='google reviewed'&&t.status==='active'));
  assert(mc.length>0);assert(mc.every(c=>c.path.includes(role==='Customer'?'8f8749ba24':'3ebb3017d4')));
  assert.equal([...s.entries].filter(([k])=>k.startsWith('confirmed/')).length,1);
