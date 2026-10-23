@@ -28,11 +28,11 @@ test('test edits remain isolated; expired and paused real edits leave record unc
  const paused=createEngine({store:s.store,env:{REVIEW_ENABLED:'false'},now:()=>now,fetcher:()=>{throw Error('Provider forbidden');}});
  await assert.rejects(()=>paused.feedback(TEST_TOKEN,{rating:5,feedback:'new',revision:2}),/paused/);assert.deepEqual(await engine.get(TEST_TOKEN),real);
 });
-async function formHarness(details={name:'Test',address:'Fake',rated:false,revision:0},postError=null){
+async function formHarness(details={name:'Test',address:'Fake',rated:false,revision:0},postError=null,search='?token=fake&rating=4'){
  const elements=new Map(),calls=[],radios=new Map();
  const element=id=>{if(!elements.has(id))elements.set(id,{hidden:false,value:'',textContent:'',disabled:false,events:{},addEventListener(type,fn){this.events[type]=fn;}});return elements.get(id);};
  const form=element('feedback-form');form.querySelector=q=>{const n=Number(q.match(/value="(\d)"/)[1]);if(!radios.has(n))radios.set(n,{checked:false});return radios.get(n);};
- const context={URLSearchParams,location:{search:'?token=fake&rating=4'},document:{getElementById:element},FormData:class{get(){return [...radios].find(([,r])=>r.checked)?.[0]??null;}},fetch:async(url,options)=>{calls.push({url,...options});return {ok:options.method!=='POST'||!postError,json:async()=>options.method==='POST'?(postError?{error:postError}:{saved:true}):details};}};
+ const context={URLSearchParams,location:{search},document:{getElementById:element},FormData:class{get(){return [...radios].find(([,r])=>r.checked)?.[0]??null;}},fetch:async(url,options)=>{calls.push({url,...options});return {ok:options.method!=='POST'||!postError,json:async()=>options.method==='POST'?(postError?{error:postError}:{saved:true}):details};}};
  vm.runInNewContext(readFileSync(new URL('../review/review.js',import.meta.url),'utf8'),context);await new Promise(resolve=>setImmediate(resolve));
  return {element,form,radios,calls,submit:()=>form.events.submit({preventDefault(){}})};
 }
@@ -61,4 +61,36 @@ test('HTTP GET is read-only; malformed submissions and stale edits return visibl
  const restored=await (await handler(new Request(url),{})).json();assert.equal(restored.rating,5);assert.equal(restored.feedback,'neal was awesom');assert.equal(restored.revision,2);
  const stale=await post(JSON.stringify({rating:4,feedback:'old',revision:0}));assert.equal(stale.status,409);assert.match((await stale.json()).error,/Reload/);
  assert.equal(s.calls.length,0);
+});
+
+for(const rating of [1,2,3,4,5])test('saved rating '+rating+' shows only its requested thank-you path',async()=>{
+ const ui=await formHarness(undefined,null,'?token=fake&rating='+rating);
+ assert.equal(ui.calls.length,1);assert(ui.radios.get(rating).checked);
+ await ui.submit();assert.equal(ui.calls.length,2);assert.equal(ui.form.hidden,true);
+ assert.equal(ui.element('google-invitation').hidden,rating<4);
+ assert.equal(ui.element('private-thanks').hidden,rating>=4);
+ const reload=await formHarness({name:'Test',address:'Fake',rated:true,rating,feedback:'saved',revision:1});
+ assert.equal(reload.element('google-invitation').hidden,rating<4);assert.equal(reload.calls.length,1);
+});
+for(const value of ['', '0','6','-1','3.5','invalid'])test('invalid initial rating '+value+' never submits or shows completion',async()=>{
+ const ui=await formHarness(undefined,null,'?token=fake&rating='+value);assert.equal(ui.radios.size,0);
+ await ui.submit();assert.equal(ui.calls.length,1);assert.equal(ui.form.hidden,false);assert.match(ui.element('status').textContent,/Select a rating/);
+});
+for(const [from,to] of [[5,3],[3,4],[4,1],[1,5]])test('successful edit '+from+' to '+to+' changes invitation visibility',async()=>{
+ const ui=await formHarness({name:'Test',address:'Fake',rated:true,rating:from,feedback:'saved',revision:1});
+ ui.element('edit-feedback').events.click();ui.radios.get(from).checked=false;ui.form.querySelector('input[value="'+to+'"]').checked=true;
+ await ui.submit();assert.equal(ui.element('google-invitation').hidden,to<4);assert.equal(ui.element('private-thanks').hidden,to>=4);assert.equal(JSON.parse(ui.calls[1].body).revision,1);
+});
+test('failed feedback save never reveals invitation',async()=>{
+ const ui=await formHarness(undefined,'Save failed');await ui.submit();assert.equal(ui.form.hidden,false);assert.match(ui.element('status').textContent,/Save failed/);
+});
+test('HTML keeps both completion paths hidden until script selects saved result',()=>{
+ const html=readFileSync(new URL('../review/index.html',import.meta.url),'utf8');
+ for(const id of ['thanks','private-thanks','google-invitation'])assert.match(html,new RegExp('id="'+id+'" hidden'));
+ assert.equal((html.match(/Share my experience on Google/g)||[]).length,1);
+});
+for(const rating of [1,2,3,4,5])test('rating '+rating+' saves privately and suppresses reminders with referrals off',async()=>{
+ const s=setup();await s.engine.enroll(inspection);const row=[...s.entries.values()].find(v=>v.data.role==='Customer').data;
+ await s.engine.feedback(row.token,{rating,feedback:'private',revision:0});const saved=await s.engine.get(row.token);assert.equal(saved.rating,rating);assert(saved.endedAt&&saved.ratedAt);
+ const before=s.calls.length;s.advance(8);await s.engine.process(row.token);assert.equal(s.calls.length,before);assert(!s.calls.some(c=>c.body?.merge_fields?.REVREF2));
 });

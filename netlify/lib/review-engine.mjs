@@ -1,3 +1,4 @@
+import {queueLowRating,deliverLowRating} from './review-low-rating.mjs';
 import {inReviewScope,excludedRequest,roleCutoff} from './review-scope.mjs';
 import {createHash,randomBytes} from 'node:crypto';
 import {AUDIENCES,DAY,ORIGIN,eligibleRecipients,referralDates,dueStage,validToken} from './review-policy.mjs';
@@ -126,6 +127,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   return locked(initial.role+':'+initial.email,async()=>{
    const row=await get(token);
    if(row.isTest||!inLaunchScope(row))return;
+   await deliverLowRating(row,{env,fetcher,save,now});
    if(row.endedAt){if(!row.finishSynced&&!row.suppressed)await finish(row);if(row.googleReviewedAt&&!row.hiveTagSynced)await syncHiveTag(row);return;}
    if(now()>=row.expiresAt){row.endedAt=row.expiresAt;await save(row);await finish(row);return;}
    const stage=dueStage(row,now());if(stage!==null&&stage>=0)await send(row,stage);
@@ -144,10 +146,10 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
     if(row.rating===input.rating&&row.feedback===feedback)return {saved:true};
     if(input.revision!==revision)throw Object.assign(Error('Feedback changed. Reload this page before editing.'),{status:409});
     row.rating=input.rating;row.feedback=feedback;row.feedbackRevision=revision+1;row.feedbackUpdatedAt=now();
-    await save(row);return {saved:true};
+    queueLowRating(row,now());await save(row);return {saved:true};
    }
    if(input.revision!==undefined&&input.revision!==0)throw Object.assign(Error('Feedback changed. Reload this page before editing.'),{status:409});
-   row.rating=input.rating;row.feedback=input.feedback.trim();row.ratedAt=now();row.endedAt=now();await save(row);
+   row.rating=input.rating;row.feedback=input.feedback.trim();row.ratedAt=now();row.endedAt=now();queueLowRating(row,now());await save(row);
    try{await finish(row);}catch{/* Stored feedback is retried by the worker. */}
    return {saved:true};
   });
@@ -167,7 +169,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
     if(excludedRequest(blob.key))continue;
     const token=blob.key.slice('requests/'.length),row=await get(token);
     if(!inLaunchScope(row))continue;
-    if(row.finishSynced&&(!row.googleReviewedAt||row.hiveTagSynced)||!row.endedAt&&now()<row.expiresAt&&dueStage(row,now())===null)continue;
+    if(row.lowRatingAlert?.state!=='pending'&&(row.finishSynced&&(!row.googleReviewedAt||row.hiveTagSynced)||!row.endedAt&&now()<row.expiresAt&&dueStage(row,now())===null))continue;
     if(processed>=20)return {read,processed};await process(token);processed++;
    }
   }
@@ -175,4 +177,3 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  }
  return {get,save,hive,mc,locked,enroll,process,feedback,confirmGoogle,run};
 }
-

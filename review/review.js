@@ -1,7 +1,7 @@
 const params=new URLSearchParams(location.search),preview=params.get('preview')==='1',token=params.get('token');
 const el=id=>document.getElementById(id),form=el('feedback-form');
 let revision=0,savedRating=null,savedFeedback='';
-const thanks=()=>{form.hidden=true;for(const id of ['review-eyebrow','review-heading','address','intro']){const item=el(id);if(item)item.hidden=true;}el('thanks').hidden=false;};
+const thanks=()=>{form.hidden=true;for(const id of ['review-eyebrow','review-heading','address','intro']){const item=el(id);if(item)item.hidden=true;}const showGoogle=Number.isInteger(savedRating)&&savedRating>=4&&savedRating<=5;el('google-invitation').hidden=!showGoogle;el('private-thanks').hidden=showGoogle;el('thanks').hidden=false;};
 async function start(){
  try{
   let details;if(preview){details={name:'Alex',address:'Your inspection address'};el('preview-note').hidden=false;}
@@ -27,4 +27,3 @@ form.addEventListener('submit',async e=>{
  }catch(e){el('status').textContent=e.message||'Please try again.';}finally{el('submit').disabled=false;}
 });
 start();
-
