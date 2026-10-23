@@ -1,0 +1,404 @@
+# Buying-agent thank-you cards — disabled draft
+
+This adds a Netlify-native review coordinator to the existing InSites website.
+It does not deploy, send email, call Cardly, purchase cards, create webhook
+subscriptions, activate a Zap, or introduce OAuth. The existing site already
+has Node >=22.12 and @netlify/blobs 11.1.4; no dependency changes are required.
+
+**Do not merge/deploy this draft or remove `build.ignore = "exit 0"` without
+explicit approval. Commits also carry `[skip netlify]`.** Preview and local
+requests fail before opening storage. Production is OFF unless the separate
+`HIVE_CARDS_ENABLED` flag is explicitly set. Card dispatch always throws, even
+if other flags are changed. No card API credential is read by this code.
+
+## Architecture and exact proposed endpoints
+
+Use the existing Netlify project `chimerical-praline-beb612` and existing
+`www.insites.services` domain. After a separately approved deployment:
+
+- Hive destination: `https://www.insites.services/.netlify/functions/hive-card-webhook`
+- Owner review API: `https://www.insites.services/.netlify/functions/cards-control`
+- Restricted Zapier ledger bridge: `https://www.insites.services/.netlify/functions/cards-bridge`
+
+These are proposed routes, NOT currently deployed or verified live endpoints.
+No custom domain, separate server, database account or Google OAuth is needed.
+The Python files from the earlier local prototype are not deployment dependencies.
+
+Hive Inspection Complete -> raw HMAC verification -> private durable queue ->
+verified buying-agent/agency snapshot -> complete per-agent history -> distinct
+copy -> owner review -> approved immutable snapshot. Zapier reads pending ledger
+projections through its restricted bridge and uses the existing Sheets connection.
+Future Cardly transmission remains an independently reviewed final stage.
+
+Store `insites-agent-cards`, key `state`, holds event IDs, business identities,
+wording reservations, approval/audit and projection state in a SINGLE object.
+Every mutation uses strong reads and conditional setJSON (`onlyIfNew` or
+`onlyIfMatch`). The whole decision is retried on CAS conflict. This prevents
+same-agent wording races without pretending that separate Blob keys or Sheets
+lookup/append form a transaction. State has a conservative 1MB capacity hold;
+never remove historical records to get past that hold. Partitioned storage or a
+transactional database needs a later migration design before substantial scale.
+No customer data or credentials belong in this public GitHub repository.
+
+## Implemented versus remaining
+
+Implemented: Netlify entrypoints; production/off gates; exact event/org allowlist;
+raw-body timestamped Hive HMAC; durable-before-202 receipt; replay/conflict
+protection; inspection+agent campaign dedupe; changed-agent hold; office address,
+suppression and history holds; exact normalized text prevention and conservative
+trigram near-match guard; three attempts then manual review; revisioned owner
+approval bound to exact copy/snapshot/artwork; approval revocation on edits or
+late history; private queue access; restricted Sheets projection/ack endpoint;
+GET-only Hive contact/agency reader and fail-closed mapping resolver; pure Cardly
+request/evidence adapters; synthetic tests. Owner/bridge tokens are distinct;
+bridge cannot approve, import history, stage a job or order a card.
+
+Additional implementation: a gated draft worker with no deployed schedule resolves contacts and
+linked agencies using reviewed mapping; requires an owner office/suppression
+attestation (expires after 30 days), reconciled history and exact stable IDs;
+and queues a draft request. The authenticated Zapier bridge claims at most three AI attempts; each valid candidate must pass deterministic exact/near-duplicate checks before review. Fixed template candidates remain only as prototype examples.
+A generic owner review page holds its bearer token only in memory and supports
+exact-copy edits, prepare, and explicit approval. It does not display a Cardly
+rendered proof; actual artwork review remains external and mandatory before use.
+Authenticated API actions support office preview/verification, event retry,
+history reconciliation and revisioned HOLD reevaluation. Recovery preserves
+identity and snapshots and can return only to review, never approval or delivery.
+
+Remaining: verified completion enum/payload paths; independently verified contact
+GET response shape and exact mapping; initial identity/address/suppression/history
+reconciliation; actual Zapier serialized Sheets upsert/readback wiring; approved
+Cardly preview and cost binding; provider transport with one-way send reservation
+and UNKNOWN recovery; provider status polling or verified event mapping.
+The pure Sheets serializer emits 37 strings for RAW writes; bridge acknowledgement
+requires exact headers and readback values plus current revision. No live Sheets
+write/readback transport has been wired. This is not an end-to-end live workflow.
+
+No scheduler exists in the account because this draft is undeployed. The worker
+source exports no schedule and requires BOTH production context and
+activation/worker flags before reading Hive or storage. Missing mapping fails
+closed. Flags alone cannot complete the unfinished provider/mapping work.
+
+## Configuration handoffs — no values created or copied
+
+Future production Functions configuration, only after specific authorization:
+
+- `HIVE_CARDS_ENABLED=false` initially. Enable only with workflow activation consent.
+- `HIVE_CARD_ORGANIZATION_ID` and `HIVE_CARD_EVENT`: exact verified values, no guessed enum.
+- `HIVE_CARD_WEBHOOK_SECRET`: generated by saving Hive automation, shown once.
+- `HIVE_CARDS_OWNER_TOKEN_SHA256`: hash of owner-only 32+ character random bearer token.
+- `HIVE_CARDS_BRIDGE_TOKEN_SHA256`: different token hash for Zapier projections/ack only.
+- `HIVE_CARDS_WORKER_ENABLED=false` initially.
+- `HIVE_CARDS_MAPPING_JSON`: reviewed paths plus verified/evidence markers; use explicit `$` for direct response roots. The agency GET is documented as a direct object; contact GET root remains unverified.
+- Existing `HIVE_API_KEY` remains in existing Netlify Functions scope. Never copy it
+  to Zapier. Only an explicitly activated worker may use the reader.
+
+Secure user handoff must provision tokens; do not put them in URLs, Sheets,
+GitHub, logs, examples or the website's publish directory. Consider stronger
+owner identity/session auth for the eventual review UI. No secret was generated.
+
+Hive form: Inspection Complete / Webhook, Active OFF, Run automatically OFF,
+delay 0, payload Inspection + Buying Agent + Event Details, agreements signed
+and payment complete. Services selection needs business-scope review before
+activation (unfiltered form currently means all services). Save only after the
+receiver is deployed with intake OFF and the user authorizes secret generation.
+Do not run Hive's Test Webhook: it transmits selected real inspection data.
+
+## Existing Zapier workflow and Sheets ledger
+
+Reuse original card Zap [private operational ID] (formerly Spectora Report -> Ask for Card
+Message). Keep its hard-stop Code step and Draft/OFF state throughout setup.
+Do not touch calendar Zap [private operational ID], blog [private operational ID], or the separate contact-sync
+workflow. Do not activate legacy Catch Raw Hook/email steps.
+
+Sent Cards already exists in the same Master Agents/Brokerages workbook with
+37 headers and zero records. Agents/Brokerages remain unchanged; the original
+Agents tab has no header row. Sync audit PR #11 is independent and must not edit
+Sent Cards. This card branch starts from main and does not modify #11's branch,
+code, private audit store or run flags. Both drafts add the same build-ignore
+guard: retain one guard when eventually reconciling approved branches.
+
+Proposed Zap after approval: restricted bridge POST `{"action":"projections"}`
+with bridge bearer token; serialize all writes to Sent Cards; locate by record_id,
+hold duplicate IDs, write values as literal strings/RAW, read back record_id plus
+all expected values and revision in evidence_reference; then POST
+`{"action":"ack","jobId":"...","revision":1,"headers":["..."],"readback":["..."]}`. A failed/ambiguous write must
+look up the same record_id before retrying. Don't append blindly or acknowledge
+before readback. The bridge serializes projections with a global claim and also supports bounded draft generation; it cannot approve or send.
+Do not let an ordinary edited Sheet cell grant approval. All changes to copy go
+back through the owner endpoint and invalidate prior approval.
+
+`sheetProjection` returns named fields plus revision for safe mapping. No order,
+mailing, delivery timestamp, sent text or cost is inferred from a draft/approval.
+Exact original text is retained alongside normalized SHA256. Unicode NFKC,
+lowercase, punctuation/spacing collapse plus selected casefold equivalences
+provide deterministic exact prevention. Near-match uses trigram Dice >=0.82;
+this conservative heuristic does not establish semantic originality. Include
+all reconciled historical wording, draft reservations and final edited copy.
+
+## Cardly verified contract (read-only documentation, no API calls)
+
+Sources checked: https://api.card.ly/v2/docs and linked
+https://api.card.ly/openapi/en-AU/2.2.0/json (link observed; specification not fetched).
+
+- Base API `https://api.card.ly/v2`; `API-Key` header, `text/json` request type.
+  Direct API keys are created in business portal Settings > API Keys; test keys
+  begin `test_`, live keys `live_`. Test responses include `testMode:true`.
+  This does not establish the auth mechanism behind Zapier's Connect screen.
+- `POST /orders/place`: `lines[]` contains artwork, template, quantity, recipient,
+  optional messages.pages (page, text, style), shippingMethod and shipToMe;
+  top-level purchaseOrderNumber links the order to the coordinator.
+- `Idempotency-Key` POST header: max64 chars; replays return same result and changed
+  payload under the same key is rejected. Use the 64-character job hash; external
+  order number is separate. Do NOT assume Zapier External Order Number alone
+  gives this server-side idempotency. Verify Zapier native action behavior before
+  enabling; if it cannot enforce it, use an approved authenticated API request
+  within Zapier that preserves the exact frozen request + header. No credential
+  migration or direct Netlify Cardly connection is authorized.
+- Generate Preview is separate from Place Order. Template/page/font/bleed mapping
+  and cost must be bound into the actual user-approved preview before sending.
+- Place response `data.order.id` identifies the order. `paid` is not mailed.
+  An authenticated Retrieve Order result must match stored order ID and external
+  number, single card quantity1, and item `timings.shipped` before marking SENT.
+  `delivery.dispatch` is an estimate, not proof. Ignore test-mode response times.
+  No DELIVERED state inferred without carrier delivery evidence.
+- Current webhook docs list `contact.order.sent` for automated contact sends;
+  applicability to direct one-off orders is unverified. Prefer verified order
+  reads until established. The page describes conflicting signature inputs
+  (raw body/header versus JSON data/body), so no webhook verifier is guessed here.
+  No provider webhook registration is created.
+
+## Synthetic checks and deployment boundary
+
+Run `node --test tests/cards.test.mjs` (58 synthetic Node tests). Tests use an in-memory CAS store,
+synthetic keys/IDs/addresses and injected HTTP mocks. They exercise concurrent
+receipt/draft collisions, wrong signatures/organization, failure before ack,
+copy exhaustion, approval edits, incomplete history, permissions, provider test
+responses and truthful mailing status. No external action tests occur.
+
+A separately approved deployment must first verify the real Blobs adapter and
+Netlify function packaging in a safe environment, response timing under10sec,
+private access, backup/retention, mapping fixtures, card previews and spending
+limits. No merges, deploys, env writes, subscriptions, orders or activation are
+part of this draft. User must approve artwork first and each final card thereafter.
+
+## Revision review and precise current state
+
+Changed buying agent holds both old and new jobs. Changed snapshots, office or
+suppression revoke approvals and increment revisions even on duplicate-stage
+paths. Exact self-history is ignored only when record ID resolves to the same
+agent's actual job and text exactly equals one of its recorded versions. True
+collisions still hold. Projection reports held/untested copy truthfully and
+preserves the original automation instance ID separately from internal hashes.
+Equal owner and bridge token hashes are rejected before store access.
+
+Cardly account connection is verified and attached to the disabled Zap. No
+new login, credential entry or account sharing is needed.
+The earlier Hive form was UNSAVED and its tab closed; no persistent automation
+was created. The preparation screenshot is evidence of a proposal only.
+
+58 Node tests validate this draft using synthetic in-memory CAS and fixture reads.
+The earlier Python scaffold separately passed 51 tests; those do not validate
+this implementation. No real SDK/Blobs concurrent-write or ambiguous-write
+integration test has run. Required before activation: authorized nonsending
+SDK integration test, deployment packaging test, real mapping fixture checks,
+browser validation of the owner page, and serialized Sheets round-trip test.
+The local card-proof file browser preview was policy-denied for file protocol;
+no alternate browser/localhost workaround was attempted.
+
+Owner review preparation uses a monotonic generation guard. Input/load changes invalidate pending preparations; out-of-order responses are discarded, failed current requests invalidate state, and approval rechecks current exact text/artwork/job revision. Regression tests cover these races.
+
+Owner-only resolveAgentConflict requires the selected verified normalized snapshot, current recipient evidence and exact revisions of all conflicting HOLD jobs. It refuses ordered/sent records, preserves histories, supersedes unselected jobs and leaves selected job HOLD for explicit reevaluation into fresh review. It never restores prior approval. This administrative API is not yet exposed as a review-page control.
+
+## 2026-10-13 disabled Zap integration update
+
+Original Zap[private operational ID] remains Draft/OFF with unconditional Code hard-stop step2.
+Legacy email replaced with Cardly Send a Card, original connection[private operational ID].
+Only an isolated read-only Sheets GET was tested. No card action test, order, AI generation or Sheet write ran. No new connection,
+API key, permission or credential was created. Duplicate[private operational ID] untouched.
+
+Read-only Cardly choices:
+- jjj: [private artifact ID]; Blank A4 Letter artwork [private artifact ID].
+- kj: [private artifact ID]; test (Postcard) artwork[private artifact ID].
+- testst: [private artifact ID]; same test postcard artwork.
+Template labels show undefined type; no intended artwork approved. Temporary
+choices cleared. Sender/return address unverified; fields show generic sample
+values, not evidence of Neal's address. No price-only/preview-only event exposed
+by Zapier Cardly1.2.5. No Send a Card test even if testMode appears.
+
+ChatGPT Conversation step uses existing[private operational ID] account [private connected account],
+JSON output and explicit drafting instructions. User Message remains a disabled
+unmapped placeholder; no real context has been transmitted. claimDraft/submitDraft
+bridge actions are implemented: 5-minute attempt lease, maximum3attempts, stale
+revision rejection, at most20,000 UTF-8 bytes of serialized prior exact text, context restricted to first name
+and completion boolean. No buyer/property/report/address payload. AI output is
+reserved deterministically before AWAITING_APPROVAL, never directly to Cardly.
+Owner edits continue through deterministic checks. Generation can vary on every
+inspection; it no longer relies on rotating the three fixed prototype templates.
+Actual claim/generation/submission field links remain pending deployed bridge and
+secure credential provisioning. The API-only bridge now has drafting authority,
+but still cannot approve, import history or send.
+
+Google Sheets API Request uses the existing authorized connection. A full editor
+refresh cleared its transient access warning; an isolated GET returned HTTP200,
+the expected37headers and no records. No reconnect, sharing or scope expansion
+is needed. The read step is configured; actual write/readback and bridge mappings
+remain unfinished pending authorized deployment and secure bridge configuration.
+
+Pure cards-sheets.mjs plans exact RAW upserts, validates all37headers and record
+identity, refuses duplicate row IDs, preserves leading zeros/formula-like text,
+and caps at current1000rows. Bridge projections now globally claim one record;
+claims have a five-minute acknowledgment deadline but never automatically free the lock, so ambiguous writes cannot race a new row.
+Use the saved projectionToken through fetch A1:AK1000 -> planUpsert -> exact PUT
+-> GET written row -> ack(headers,readback,jobId,current revision,projectionToken).
+On ambiguous write, fetch the same ID and reconcile; never blind append. Owner
+queue exposes the outstanding claim for reconciliation; after a job revision
+changes or a claim expires, acknowledgment is rejected. Such claims require
+explicit owner reconciliation through the narrow action below. There is no force-release action. No actual upsert/readback transport has run.
+
+User rejected prior concept PDF. Replacement branded proof is separately owned:
+[private Library ID], InSites_realtor_thank_you_brand_proof.pdf.
+No upload to Cardly or artwork approval. Pricing, dimensions, bleed and mailing
+zones remain unverified. No deployment or launch authority granted.
+
+Acknowledgment requires an active exact job/token/revision claim with an unexpired
+five-minute deadline and a pending projection. Missing, expired, already-used and
+wrong claims reject; no idempotent-ack exception is implemented. Expiry never
+automatically frees the global write lock. Interrupted/expired or revision-changed
+claims remain safely held until the owner reconciliation action verifies readback evidence.
+
+Private workbook ID is bound by createLedgerPlanner to HIVE_CARDS_LEDGER_WORKBOOK_ID deployment configuration, not committed or accepted from projection/request fields. The returned planUpsert accepts only values and projection.
+Account email addresses, connection IDs and private artifact IDs are omitted from
+repository documentation. Keep actual mapping only in the private operations handoff.
+
+Sheets access correction: refreshing the editor resolved its transient account
+warning. Existing connection/API Request successfully performed an isolated GET
+returning HTTP200, the37expectedheaders and zero card rows. No OAuth, sharing,
+permissions or write occurred. No reconnect is necessary.
+
+AI context-capacity holds use the same versioned job-change helper as other
+updates: revision, updatedAt and projectionPending all change, so an already
+acknowledged ledger projection receives the new hold reason.
+
+
+## Owner-only interrupted projection recovery
+
+`reconcileProjection` is available only through the authenticated owner endpoint.
+The global claim now stores the exact original job snapshot. Before calling it,
+the owner must stop the old Zap run and establish that no old write remains in
+flight, then fetch the complete configured `Sent Cards!A1:AK1000` range using the
+existing authorized Sheets connection. Merely waiting for lease expiry is not
+sufficient. If that operational fence cannot be established, keep the lock.
+
+The action requires current job revision, exact claim token, the configured
+workbook ID, literal range `'Sent Cards'!A1:AK1000`, all returned string rows,
+`observedAt` within five minutes and after the claim, `writerStopped: true`, and
+an owner evidence description. The server validates headers and row identity;
+it does not independently fetch Google Sheets or prove the owner's attestation.
+This is an administrative recovery API, not yet a review-page button.
+
+An exact claimed row confirms the older/current write. Current confirmed writes
+clear pending; older confirmed writes and absent rows requeue the current desired
+projection. Unexpected edits or duplicate matching IDs retain the lock for manual
+review. Job revision, approval, wording and delivery status are preserved. Audit
+retains the claim snapshot, both revisions, readback fingerprint and evidence.
+Legacy claims without a saved snapshot remain locked. No automatic expiry,
+force-release, blind append or replay is introduced. All actual writes remain
+unwired and disabled.
+
+## Smallest secure connection plan (not provisioned)
+
+API by Zapier is visible in this account's Add new connection picker. Its official
+Static Headers connection stores authentication separately from ordinary Zap
+fields and supports an exact domain filter. A new dedicated connection can carry
+only the restricted bridge token for `www.insites.services`; server role checks
+remain necessary because a domain filter is not a path restriction. No connection
+was created. Existing Cardly, Sheets and ChatGPT credentials cannot authenticate
+the custom coordinator endpoint. The account has Zapier Pro, an eligible paid plan; no upgrade is required. Source: https://help.zapier.com/hc/en-us/articles/44391660158733-How-to-get-started-with-API-by-Zapier
+
+Three separate future handoffs are needed: Hive's generated signing secret into
+Netlify Functions configuration; an owner-only random token retained in the
+owner's password manager with only its SHA256 verifier in Netlify; and a distinct
+bridge token entered by the user into API by Zapier Static Headers with only its
+SHA256 verifier in Netlify. Credential generation, hashing and secure handoff
+have not been performed. User credential entry/submission and specific access
+approval are required; never ask for raw values in chat. Existing authorized
+Netlify dashboard access avoids creating a new Netlify personal token. Function
+scoping and extra secret controls depend on the site's Netlify plan and remain
+to be checked. No new provider or Google API credentials are needed.
+
+Deployment remains a separate approval. With `HIVE_CARDS_ENABLED=false`, every workflow
+operation returns disabled before opening storage. The narrowly scoped connection
+check described below is the only exception; never activate the coordinator just
+to make a connection test pass. Receiver deployment, credential provisioning,
+synthetic runtime testing, real-data intake and card delivery are separate gates.
+
+
+## Disabled installation check and user-entry checklist
+
+Proposed Test URL after approved deployment:
+`https://www.insites.services/.netlify/functions/cards-bridge?connection_check=1`.
+Only HTTPS GET on that exact bridge path/query in production can pass. It requires
+a valid dedicated bridge bearer token and a configured different owner verifier.
+It returns only fixed connection/scope/delivery-disabled metadata, with no-store
+headers. It never reads the body, opens storage, calls a provider, mutates a queue,
+returns customer data or enables intake. All other operations retain the OFF gate.
+Tests cover wrong/missing/owner credentials, equal role hashes, previews, methods,
+TLS, extra parameters, wrong paths and attempted workflow bypass.
+
+The actual API by Zapier v2.2.0 connection form was inspected without entering or
+submitting anything. Least-privilege choices for the future user handoff:
+
+1. Authentication Type: Static Headers (API key).
+2. Connection Name: InSites card draft bridge (owner-private; no sharing).
+3. Domain Filter: `www.insites.services` exactly, without wildcard or extra domains.
+   The form normalizes URL-like values to a hostname, so a path is NOT a scope.
+4. Headers: one Authorization bearer header containing only the dedicated bridge
+   token, entered by the user in the connection form. Never put the owner token,
+   Hive key or signing secret there; never use a normal Zap code/header field.
+5. Test URL: the exact connection-check URL above; no token in the URL.
+6. User completes Connect only after specific access approval. Leave the Zap OFF.
+
+Before this handoff, the user provisions two independent random credentials via
+a reviewed local/password-manager procedure and stores their SHA256 verifiers in
+Netlify's production environment configuration. The reviewed candidate helper is `python3 tools/cards-token-verifiers.py`: it
+accepts two distinct password-manager-generated tokens through confirmed hidden
+terminal prompts, refuses noninteractive/echoed input and command arguments,
+and emits only SHA256 verifiers. It creates no token, file or network request.
+The helper is excluded from site publishing and has not handled real credentials.
+Do not substitute an online hash website, chat, logs, command-line arguments or
+a public file. The user must approve and perform this local handoff themselves. The user completes secret
+entry/submission directly. Hive signing-secret generation and storage remain a
+separate later handoff and are unnecessary for the connection-only smoke test.
+The owner token authorizes review and recovery; the bridge token authorizes
+bounded generation and ledger projection only. No OAuth scope list applies to
+Static Headers; server authorization enforces these operation limits.
+
+## Bounded deployment proposal — still requires approval
+
+Use the existing site/domain only. Review the exact PR commit and reconcile main
+before any merge; retain the current skip-build guard until a single approved
+production deployment is ready. Set activation and worker flags false first;
+provision only the two role verifiers needed for connection checking. Do not
+create a Hive automation, provider webhook, scheduler or live card action.
+No recurring worker schedule is exported, avoiding idle scheduled invocations.
+
+Plan one production deployment and at most ten nonsending smoke-check requests,
+then stop and report. Verify ordinary site health, disabled intake/control/bridge
+operations, and the authenticated connection check. Do not run the full Zap,
+write customer rows, call AI, test Cardly, or retry deployments automatically.
+If a check fails, stop for diagnosis; a second deploy needs a revised budget.
+Rollback means restore the prior known-good deployment under explicit approval.
+Do not merge the unrelated contact-audit draft as part of this installation.
+
+Current published credit rates: production deploy 15 credits, compute 10 credits
+per GB-hour, requests 2 credits per 10,000, bandwidth 20 credits per GB. Reserve
+roughly16credits for this one-deploy/small-smoke-test proposal; this is an estimate,
+not a billing cap, and ordinary site traffic is separate. Confirm remaining
+account credits immediately before approval. Do not purchase credits, upgrade or
+change auto recharge. Official rates: https://www.netlify.com/pricing/ .
+
+Existing Zapier Pro includes API by Zapier; future successful actions consume the
+existing plan's tasks. Current balances and overage settings are recorded only in
+the private operations handoff. Disabled preparation does not authorize paid
+workflow runs. Real-data intake, Sheet write/readback integration, actual card
+proof/cost approval and sending remain later separately approved work.

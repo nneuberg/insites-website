@@ -4,3 +4,6 @@ package.json
 package-lock.json
 pnpm-lock.yaml
 GALLERY-SETUP.md
+CARDS-WORKFLOW.md
+
+tools/
