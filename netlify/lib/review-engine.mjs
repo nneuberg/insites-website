@@ -1,4 +1,4 @@
-import {inReviewScope,excludedRequest} from './review-scope.mjs';
+import {inReviewScope,excludedRequest,roleCutoff} from './review-scope.mjs';
 import {createHash,randomBytes} from 'node:crypto';
 import {AUDIENCES,DAY,ORIGIN,eligibleRecipients,referralDates,dueStage,validToken} from './review-policy.mjs';
 export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.now()}){
@@ -94,9 +94,19 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
    // A person linked as an agent elsewhere must never receive a client reward invitation.
    const person={...original,role:contact.roles?.some(r=>['Buyer Agent','Seller Agent','Listing Agent','Agent'].includes(r))?'Agent':original.role};
    if(env.REVIEW_CLIENT_ONLY==='true'&&person.role!=='Customer')continue;
-   const identity=person.role+':'+person.email;
+   if(env.REVIEW_BUYER_ONLY==='true'&&person.role==='Agent'){
+    const buyer=inspection.contacts.some(c=>c.role==='Buyer Agent'&&String(c.email||'').trim().toLowerCase()===person.email);
+    if(!buyer)continue;
+    person.buyerAgentVerified=true;
+   }
+   const personCutoff=roleCutoff(person.role,env);
+   if(!Number.isFinite(personCutoff)||person.endedAt<personCutoff)continue;
+   const identity='person:'+person.email;
    await locked(identity,async()=>{
-    const indexKey='people/'+hash(identity),index=await store.get(indexKey,{type:'json'});
+    // Respect both legacy role indexes as well as the shared person index.
+    const indexes=await Promise.all(['person:'+person.email,'Customer:'+person.email,'Agent:'+person.email].map(k=>store.get('people/'+hash(k),{type:'json'})));
+    for(const existing of indexes)if(existing&&await get(existing.token))return;
+    const indexKey='people/'+hash(identity),index=indexes[0];
     const prior=index?await get(index.token):null;
     // One review sequence per person, including repeat inspections.
     if(prior)return;
