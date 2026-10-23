@@ -78,3 +78,15 @@ test('unsubscribe GET confirms without mutation, POST persists suppression, inva
  assert.equal((await handler(new Request(url,{method:'POST'}))).status,200);assert.equal(calls,1);
  assert.equal((await handler(new Request(url+'x',{method:'POST'}))).status,400);assert.equal(calls,1);
 });
+
+test('code removal and explicit verification failure clear prior reward readiness',()=>{
+ const h=harness();h.call('prepareShare',validateShare(input));use(h);const row=h.tables.CodeUses[0];
+ h.call('recordCodeUse',{inspection:{id:'one',codes:[],clientId:'client-one',clientEmail:'friend@example.com'},evidence:'Removal fixture'});
+ assert.equal(h.tables.CodeUses[0]['Reward Due At'],'');assert.match(h.tables.CodeUses[0]['Hold Reason'],/removed/);
+ use(h);h.call('holdCodeUse',{inspectionId:'one',reason:'API unavailable'});assert.equal(h.tables.CodeUses[0]['Last Verified At'],'');assert.equal(h.tables.CodeUses[0]['Reward Due At'],'');
+});
+test('reward receipts can be retried without creating or changing a reward',()=>{
+ const h=harness();h.call('prepareShare',validateShare(input));use(h);let row=h.tables.CodeUses[0];row['Paid At']=new Date(Date.now()-2*86400000).toISOString();row['Reward Due At']=new Date(Date.now()-86400000).toISOString();h.call('reserveCodeReward',{useId:'HIVE-one'});
+ const receipt={useId:'HIVE-one',rewardId:'synthetic-only',sentAt:'2026-10-22T12:00:00.000Z',claimDeadline:'2027-04-22T12:00:00.000Z'};
+ assert.equal(h.call('codeRewardSent',receipt).updated,true);assert.equal(h.call('codeRewardSent',receipt).updated,false);assert.throws(()=>h.call('codeRewardSent',{...receipt,rewardId:'another'}));
+});

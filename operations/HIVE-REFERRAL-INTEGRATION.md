@@ -31,3 +31,13 @@ Commit 4352a55808434e57161fdcf87a067bee7296c4b2 deployed successfully as 6ad6b0c
 6. Complete full-history read-only reconciliation, then a controlled synthetic integration test outside customer messaging/reward providers. Finish reward retry and ambiguous-outcome tests before launch.
 
 Google Business Profile access is used by the separate review engine; the referral matching itself does not require Google reviews. Existing Google Apps Script ledger authentication is already verified. Coupon generation remains paused as requested.
+
+
+## October 22 processing update
+
+- `referral-hive-sync` runs every five minutes when REFERRAL_HIVE_SYNC_ENABLED=true. It writes only referral observations to the existing ledger; it cannot send messages or rewards.
+- Each tick processes a bounded queue event, rotates through known referrals for payment/cancellation changes, and resumes a five-inspection discovery page. Private cursor state is in insites-referral-sync. A scan is complete only when the cursor reaches the end.
+- Read failures and removed/ambiguous codes explicitly clear old reward readiness. Failed writes retain the cursor/event for retry. The ledger requires the 2026-10-22-reconcile version before processing begins.
+- Reward receipts are idempotent: retrying the same confirmed receipt succeeds without issuing another reward; conflicting receipts fail.
+- New-client history and refund/dispute clearance remain unknown because the documented Hive inspection response does not supply them. Reward sending must remain disabled until an authoritative source or reviewed approval procedure is connected.
+- Xoxoday Reward Links is the intended pay-on-redeem route. Do not replace it with a direct gift-card order or infer account pricing from public marketing examples. Account access, USD Amazon campaign/catalog, expiry, and provider retry/reconciliation semantics must be verified first.

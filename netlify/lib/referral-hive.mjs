@@ -36,7 +36,7 @@ export function inspectionFacts(i,{serviceIds=[],now=Date.now(),previousUse=null
  const previousMatches=previousUse?.['Hive Inspection ID']===i.id&&previousUse?.['Client ID']===client?.id&&codes.includes(previousUse?.Code);
  const priorCompletion=previousMatches?Date.parse(previousUse['Completed At']):NaN;
  const completedAt=completed?new Date(Number.isFinite(priorCompletion)&&priorCompletion>=Date.parse(i.ends_at)&&priorCompletion<=now?priorCompletion:now).toISOString():null;
- return {id:i.id,codes,clientId:client?.id||null,clientEmail:client?.email||null,bookedAt:i.created_at||null,paid,fullInspection,
+ return {id:i.id,codes,clientId:client?.id||null,clientEmail:client?.email||null,bookedAt:i.created_at||null,endsAt:i.ends_at||null,paid,fullInspection,
   completed,completedAt,newClient:null,refunded:null,disputed:null,canceled:active?false:(i.status==='canceled'||i.deleted===true?true:null)};
 }
 export function matchReferral(i,snapshot,options={}){
