@@ -30,9 +30,9 @@ export function payloadShape(value,depth=0){
  if(typeof value==='object')return Object.fromEntries(Object.keys(value).slice(0,60).map(key=>[/^[a-zA-Z_][a-zA-Z0-9_]{0,59}$/.test(key)?key:'[redacted-key]',payloadShape(value[key],depth+1)]));
  return typeof value;
 }
-export function createAutomationCapture({secret,organizationId,templateId,save,now=()=>Date.now()}){
+export function createAutomationCapture({secret,organizationId,templateId,save,enqueue,processing=false,completionEvent,now=()=>Date.now()}){
  return async request=>{
-  const reply=(body,status)=>Response.json(body,{status,headers:{'Cache-Control':'no-store','X-Review-Capture-Version':'strict-test-v2'}});
+  const reply=(body,status)=>Response.json(body,{status,headers:{'Cache-Control':'no-store','X-Review-Capture-Version':'queue-v3'}});
   if(request.method!=='POST')return reply({error:'Method not allowed'},405);
   if(!secret||!templateId||!organizationId)return reply({error:'Capture not configured'},503);
   if(Number(request.headers.get('content-length'))>262144)return reply({error:'Too large'},413);
@@ -43,6 +43,16 @@ export function createAutomationCapture({secret,organizationId,templateId,save,n
   try{verifyHive(raw,request.headers,secret,now());}catch{return reply({error:'Invalid signature'},401);}
   let body,envelope;
   try{body=JSON.parse(raw.toString('utf8'));envelope=automationEnvelope(body,request.headers,{organizationId,templateId});}catch(error){const reasons=new Set(['Invalid envelope','Invalid identifier','Unexpected template','Unexpected organization','Instance mismatch','Invalid event','Invalid sections','Invalid data']);return reply({error:'Unexpected Automation envelope',reason:reasons.has(error.message)?error.message:'Invalid JSON'},400);}
+  if(processing&&!envelope.signedTest){
+   // Actual event spelling must be verified before migration is enabled.
+   if(!completionEvent||typeof enqueue!=='function')return reply({error:'Processing not configured'},503);
+   if(envelope.event!==completionEvent||request.headers.get('x-automation-event')!==completionEvent)return reply({error:'Unexpected completion event'},400);
+   let inspectionId;try{inspectionId=identifier(body.data.inspection?.id);}catch{return reply({error:'Missing inspection identifier'},400);}
+   const key='review-events/'+createHash('sha256').update(envelope.organizationId+':'+envelope.templateId+':'+envelope.instanceId).digest('hex');
+   try{await enqueue(key,{inspectionId,organizationId:envelope.organizationId,templateId:envelope.templateId,instanceId:envelope.instanceId,state:'pending',receivedAt:now(),attempts:0,nextAttemptAt:0},{onlyIfNew:true});}
+   catch{return reply({error:'Queue unavailable'},503);}
+   return reply({queued:true,enrollment:false},202);
+  }
   const record={...envelope,receivedAt:now(),mode:'capture-only',payloadSections:body.payload_sections,shape:payloadShape(body.data)};
   const key='automation-captures/'+createHash('sha256').update(envelope.organizationId+':'+envelope.templateId+':'+(envelope.signedTest?'test:'+createHash('sha256').update(raw).digest('hex'):envelope.instanceId)).digest('hex');
   try{await save(key,record,{onlyIfNew:true});}catch{return reply({error:'Capture unavailable'},503);}

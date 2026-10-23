@@ -154,15 +154,18 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
    return {saved:true};
   });
  }
- async function run(){
+ async function run({discover=true}={}){
   if(env.REVIEW_ENABLED!=='true'||!Number.isFinite(Date.parse(env.REVIEW_START_AFTER||'')))return {paused:true};
-  let cursor=(await store.get('scan',{type:'json'}))?.cursor,read=0;
+  let read=0;
+  if(discover){
+  let cursor=(await store.get('scan',{type:'json'}))?.cursor;
   // Bound each run below provider limits; cursor resumes on the following run.
   const filters=new URLSearchParams({limit:'5',status:'confirmed',paid:'true',agreements_signed:'true',published:'true',scheduled_after:new Date(Date.parse(env.REVIEW_START_AFTER)-DAY).toISOString(),scheduled_before:new Date(now()).toISOString()});
   if(cursor)filters.set('cursor',cursor);
   const list=await hive('inspections?'+filters);
   for(const item of list.data||[]){const detail=await hive('inspections/'+encodeURIComponent(item.id));await enroll(detail);read++;}
   await store.setJSON('scan',{cursor:list.next_cursor||null});
+  }
   let processed=0;
   for await(const page of store.list({prefix:'requests/',paginate:true})){
    for(const blob of page.blobs){
