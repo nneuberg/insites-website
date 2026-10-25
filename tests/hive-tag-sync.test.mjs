@@ -1,76 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {REMOVABLE_HIVE_TAGS,tagChanges,reconcileHiveTags} from '../netlify/lib/hive-tag-sync.mjs';
-import {createEngine} from '../netlify/lib/review-engine.mjs';
-import {AUDIENCES} from '../netlify/lib/review-policy.mjs';
-
-const OWNED=[
- '1st time buying agent','new selling agent','repeat selling agent',
- 'absent selling agent','absent buying agent','repeat buying agent',
- 'super buying agent','vip buying agent','no business'
-];
-const MANUAL=['google reviewed','REVIEW:PENDING','REVIEW:COMPLETE','REF:CODE-OWNER',
- 'REF:QA','feedback received','photo client','PHOTO:DELIVERED','campaign october',
- 'CAMPAIGN:PAUSED','SUPPRESS:EMAIL','do not email','manual VIP','Past Client',
- 'first time buying agent','vip buying agents','no business:manual'];
-const norm=s=>s.trim().toLowerCase();
-const tags=names=>names.map(name=>({name}));
-const contact=(names=[],extra={})=>({id:'fixture-one',email:'fixture@example.invalid',tags:tags(names),...extra});
+import {REMOVABLE_HIVE_TAGS,tagChanges} from '../netlify/lib/hive-tag-sync.mjs';
+import {fixture,contact,tags,page,catalogPage,OWNED,MANUAL} from './hive-tag-sync-harness.mjs';
 const inactive=names=>names.map(name=>({name,status:'inactive'}));
 const active=names=>names.map(name=>({name,status:'active'}));
-
-// No provider SDK or network is used. Even createEngine's HTTP calls terminate
-// in this injected fetcher with fake credentials and reserved-domain contacts.
-function fixture(options={}){
- const entries=new Map(),members=new Map(),calls=[],writes=[];
- let sequence=0,clock=Date.parse('2026-10-25T12:00:00Z');
- const store={
-  async get(key){return structuredClone(entries.get(key)?.data??null);},
-  async getWithMetadata(key){return structuredClone(entries.get(key)??null);},
-  async setJSON(key,data,condition={}){
-   await options.beforeSave?.(key,data);
-   const old=entries.get(key);
-   if(condition.onlyIfNew&&old||condition.onlyIfMatch&&old?.etag!==condition.onlyIfMatch)return {modified:false};
-   entries.set(key,{data:structuredClone(data),etag:String(++sequence)});return {modified:true};
-  }
- };
- const keyFor=(role,email='fixture@example.invalid')=>`/3.0/lists/${AUDIENCES[role]}/members/${createHash('md5').update(email).digest('hex')}`;
- for(const role of ['Agent','Customer'])members.set(keyFor(role),{
-  status:role==='Agent'?'unsubscribed':'transactional',email_address:'fixture@example.invalid',
-  merge_fields:{FNAME:'Fixture',REVLINK:'',REFDATE:'',HISTORY:'retain'},
-  tags:tags(options.memberTags??['no business',...MANUAL])
- });
- async function route(url,request){
-  const u=new URL(url);
-  if(u.hostname==='api.hiveinspect.com'){
-   assert.equal(request.method,'GET','sync never writes Hive');
-   if(u.pathname==='/v1/tags')return Response.json(options.catalog??{data:tags([...OWNED,...MANUAL])});
-   assert.equal(u.pathname,'/v1/contacts');
-   if(u.searchParams.has('email'))return Response.json(options.matches??{data:[contact(options.hiveTags??['repeat buying agent'])]});
-   return Response.json(options.page?await options.page(u.searchParams):{data:[contact()],next_cursor:null,total:1});
-  }
-  assert.equal(u.hostname,'us5.api.mailchimp.com','unexpected service');
-  const key=u.pathname.replace(/\/tags$/,''),member=members.get(key);
-  if(!member)return new Response(null,{status:404});
-  if(request.method==='GET')return Response.json(member);
-  assert.equal(request.method,'POST');assert.ok(u.pathname.endsWith('/tags'));
-  const body=JSON.parse(request.body);assert.deepEqual(Object.keys(body),['tags']);
-  writes.push({key,body:structuredClone(body)});
-  for(const change of body.tags){
-   assert.ok(['active','inactive'].includes(change.status));
-   member.tags=member.tags.filter(t=>norm(t.name)!==norm(change.name));
-   if(change.status==='active')member.tags.push({name:change.name});
-  }
-  return new Response(null,{status:204});
- }
- const engine=createEngine({store,now:()=>clock,env:{HIVE_API_KEY:'mock',MAILCHIMP_API_KEY:'mock-us5'},fetcher:async(url,request)=>{
-  calls.push({url,method:request.method,body:request.body});
-  return options.intercept?options.intercept(url,request,()=>route(url,request)):route(url,request);
- }});
- return {store,engine,entries,members,calls,writes,keyFor,now:()=>clock,advance:ms=>clock+=ms,
-  run:(extra={})=>reconcileHiveTags({engine,store,now:()=>clock,apply:true,...extra})};
-}
 
 test('the immutable removal boundary is exactly the nine approved automatic statuses',()=>{
  assert.deepEqual(REMOVABLE_HIVE_TAGS,OWNED);assert.ok(Object.isFrozen(REMOVABLE_HIVE_TAGS));
@@ -119,24 +53,23 @@ test('audit calculates the same plan with zero Mailchimp writes and separate cur
  assert.ok(await f.store.get('tag-sync/all-audit-full'));
 });
 test('union of duplicate Hive emails prevents a status present on either record being removed',async()=>{
- const f=fixture({matches:{data:[contact(['no business']),contact(['repeat buying agent'],{id:'fixture-two',email:' FIXTURE@EXAMPLE.INVALID '})]}});
+ const f=fixture({matches:page([contact(['no business']),contact(['repeat buying agent'],{id:'fixture-two',email:' FIXTURE@EXAMPLE.INVALID '})])});
  await f.run();for(const member of f.members.values())assert.ok(member.tags.some(t=>t.name==='no business'));
  assert.ok(f.writes.every(w=>w.body.tags.every(t=>t.status==='active')));
 });
 for(const [name,matches] of Object.entries({
- missing:{},nullData:{data:null},empty:{data:[]},paginated:{data:[contact()],next_cursor:'more'},
- missingTags:{data:[{email:'fixture@example.invalid'}]},nullTags:{data:[contact(),contact([],{tags:null})]},
- wrongEmail:{data:[contact([],{email:'another@example.invalid'})]},invalidName:{data:[contact([],{tags:[{}]})]}
+ missing:{},nullData:{data:null},paginated:{data:[contact()],next_cursor:'more',total:2},
+ wrongEmail:page([contact([],{email:'another@example.invalid'})])
 }))test(`incomplete email lookup (${name}) fails closed and keeps contact queued`,async()=>{
  const f=fixture({matches});await assert.rejects(f.run());assert.equal(f.writes.length,0);
  assert.equal((await f.store.get('tag-sync/all-live-recent')).pending.length,1);
 });
-for(const [name,catalog] of Object.entries({missing:{},nullData:{data:null},paginated:{data:tags(OWNED),next_cursor:'more'},invalidName:{data:[{name:' '}]}}))
+for(const [name,catalog] of Object.entries({missing:{},nullData:{data:null},paginated:{...catalogPage(OWNED),next_cursor:'more'},invalidName:catalogPage([' '])}))
  test(`incomplete catalog (${name}) aborts before contact or member reads`,async()=>{
   const f=fixture({catalog});await assert.rejects(f.run());assert.equal(f.calls.length,1);assert.equal(f.writes.length,0);
  });
 test('an explicitly empty contact tag array removes only owned statuses, even with an empty catalog',async()=>{
- const f=fixture({catalog:{data:[]},matches:{data:[contact([])]}});await f.run();
+ const f=fixture({catalog:catalogPage([]),matches:page([contact([])])});await f.run();
  for(const member of f.members.values())assert.deepEqual(member.tags,tags(MANUAL));
  assert.ok(f.writes.every(w=>w.body.tags.every(t=>t.status==='inactive'&&OWNED.includes(t.name))));
 });
@@ -188,7 +121,7 @@ test('interruption after writes but before checkpoint recovers without replay or
  await f.run();assert.equal(f.writes.length,2);assert.equal((await f.store.get('tag-sync/all-live-recent')).pending,undefined);
 });
 test('recent and full scans retain independent cursors, use limit 25 and finish the next page on the next run',async()=>{
- const queries=[];const f=fixture({page:q=>{queries.push(Object.fromEntries(q));return {data:[contact()],next_cursor:q.has('cursor')?null:'page-2',total:2};}});
+ const queries=[];const f=fixture({page:q=>{queries.push(Object.fromEntries(q));return {data:[contact([],{id:q.has('cursor')?'fixture-two':'fixture-one'})],next_cursor:q.has('cursor')?null:'page-2',total:2};}});
  assert.equal((await f.run()).cycleComplete,false);
  for(const pass of ['recent','full'])assert.equal((await f.store.get(`tag-sync/all-live-${pass}`)).cursor,'page-2');
  const result=await f.run();assert.equal(result.cycleComplete,true);assert.equal(result.fullContacts,2);
@@ -198,10 +131,10 @@ test('recent and full scans retain independent cursors, use limit 25 and finish 
  assert.equal(f.writes.length,2);
 });
 test('deadline interruption preserves pending page items before advancing its cursor',async()=>{
- let f;f=fixture({page:()=>({data:[contact(),contact([],{id:'second'})],next_cursor:'next',total:3}),intercept:async(url,request,next)=>{
-  if(url.includes('email='))f.advance(19000);return next();
+ let f;f=fixture({page:q=>q.has('cursor')?{data:[contact([],{id:'third'})],next_cursor:null,total:3}:{data:[contact(),contact([],{id:'second'})],next_cursor:'next',total:3},intercept:async(url,request,next)=>{
+  if(url.includes('email=')&&f.now()===Date.parse('2026-10-25T12:00:00Z'))f.advance(19000);return next();
  }});
- await f.run();assert.equal((await f.store.get('tag-sync/all-live-recent')).pending.length,1);
+ await f.run();assert.equal((await f.store.get('tag-sync/all-live-recent')).pending.length,2);
  assert.equal((await f.store.get('tag-sync/all-live-recent')).cursor,null);
  await f.run();assert.equal((await f.store.get('tag-sync/all-live-recent')).cursor,'next');
  assert.equal(f.writes.length,2);
@@ -224,17 +157,15 @@ test('an abandoned lock blocks until its existing lease expires, then recovery s
  f.advance(120001);await f.run();assert.equal(f.writes.length,2);assert.equal((await f.store.get(key)).until,0);
 });
 test('invalid contact emails are skipped without any member request',async()=>{
- const f=fixture({page:()=>({data:[contact([],{email:''}),contact([],{email:'invalid'})]})});await f.run();assert.equal(f.writes.length,0);
+ const f=fixture({page:()=>page([contact([],{email:''}),contact([],{id:'fixture-two',email:'invalid'})])});await f.run();assert.equal(f.writes.length,0);
  assert.ok(f.calls.every(c=>!c.url.includes('/members/')));
 });
-test('known source-completeness limit: an understated email page without a cursor is currently trusted',async()=>{
- // Characterization of an existing gap, NOT a completeness guarantee. A missing
- // duplicate might hold the status removed here. The ownership fix still protects
- // all non-owned tags. A separate source-validation change is needed for totals.
- const f=fixture({matches:{data:[contact([])],total:2,next_cursor:null}});await f.run();
- assert.equal(f.writes.length,2);for(const member of f.members.values())assert.deepEqual(member.tags,tags(MANUAL));
+test('an understated complete email page fails closed before writes',async()=>{
+ const f=fixture({matches:{data:[contact([])],total:2,next_cursor:null}});await assert.rejects(f.run(),/Incomplete email match/);
+ assert.equal(f.writes.length,0);assert.equal((await f.store.get('tag-sync/all-live-recent')).pending.length,1);
 });
-test('known pagination limit: inconsistent discovery total without a cursor is currently marked complete',async()=>{
- const f=fixture({page:()=>({data:[],total:2,next_cursor:null})});const result=await f.run();
- assert.equal(result.cycleComplete,true);assert.equal(result.fullChecked,0);assert.equal(f.writes.length,0);
+test('inconsistent terminal discovery totals preserve cursor and request an uncompleted restart',async()=>{
+ const f=fixture({page:()=>({data:[],total:2,next_cursor:null})});await assert.rejects(f.run(),/inconsistent-terminal-count/);
+ const saved=await f.store.get('tag-sync/all-live-recent');assert.equal(saved.cursor,null);assert.ok(saved.restartRequired);
+ assert.equal(saved.lastVerifiedCycleComplete,undefined);assert.equal(await f.store.get('tag-sync/last-live'),null);assert.equal(f.writes.length,0);
 });

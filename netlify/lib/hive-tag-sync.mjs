@@ -20,58 +20,159 @@ export function tagChanges(hiveNames,mailchimpNames,knownHiveNames){
   ...mailchimpNames.filter(name=>!operationalTag(name)&&removableTags.has(normalize(name))&&!current.has(normalize(name))).map(name=>({name,status:'inactive'}))
  ];
 }
+const text=value=>typeof value==='string'&&value.trim().length>0;
+const cursor=value=>value===null||text(value);
+const validEmail=value=>typeof value==='string'&&/^\S+@\S+\.\S+$/.test(value.trim());
+class RecordHold extends Error {}
+class TickBudget extends Error {}
+// Hive documents total across ALL matching pages, and explicit null at the end.
+// Presence/identity checks are stricter destructive-sync safety preconditions;
+// OpenAPI does not declare these properties required. Short pages are valid.
+function listPage(value,label,{limit=Infinity,complete=false}={}){
+ if(!value||!Array.isArray(value.data)||!Object.hasOwn(value,'next_cursor')||!cursor(value.next_cursor)||
+    !Number.isSafeInteger(value.total)||value.total<0||value.data.length>limit||value.data.length>value.total||
+    complete&&(value.next_cursor!==null||value.total!==value.data.length))throw Error('Incomplete '+label);
+ const ids=value.data.map(row=>row?.id);
+ if(ids.some(id=>!text(id))||new Set(ids).size!==ids.length)throw Error('Invalid identities in '+label);
+ return value;
+}
+const emptyCoverage=()=>({version:1,verified:true,ids:[],cursors:[],total:null});
+const backoff=attempts=>Math.min(60,5*2**Math.min(attempts-1,4))*60000;
 export async function reconcileHiveTags({engine,store,apply=false,now=()=>Date.now()}){
  return engine.locked('hive-tag-reconciliation',async()=>{
-  const started=now(),catalog=await engine.hive('tags');
-  if(!Array.isArray(catalog.data)||catalog.next_cursor)throw Error('Incomplete Hive tag catalog');
+  const started=now(),mode=apply?'live':'audit';
+  const save=async(key,value)=>{if((await store.setJSON(key,value))?.modified===false)throw Error('Sync checkpoint was not saved');};
+  const checkBudget=deadline=>{if(now()-started>=deadline)throw new TickBudget();};
+  const catalog=listPage(await engine.hive('tags'),'Hive tag catalog',{complete:true});
   const names=catalog.data.map(t=>t.name);
-  if(names.some(n=>typeof n!=='string'||!n.trim()))throw Error('Invalid Hive tag catalog');
+  if(names.some(n=>!text(n)))throw Error('Invalid Hive tag catalog');
   const previous=await store.get('tag-sync/catalog',{type:'json'})||[];
-  const known=[...new Set([...previous,...names])];await store.setJSON('tag-sync/catalog',known);
-  const result={mode:apply?'live':'audit',recentChecked:0,fullChecked:0,missingMembers:0,added:0,removed:0,removalPolicy:'automatic-agent-status-v1',removableTags:REMOVABLE_HIVE_TAGS,protectedTags:'Every tag outside removableTags',cycleComplete:false};
-  async function reconcile(contact){
+  if(!Array.isArray(previous)||previous.some(n=>!text(n)))throw Error('Invalid saved Hive tag catalog');
+  const known=[...new Set([...previous,...names])];await save('tag-sync/catalog',known);
+  const holdKey='tag-sync/holds-'+mode,holds=await store.get(holdKey,{type:'json'})||{version:1,records:[]};
+  if(holds.version!==1||!Array.isArray(holds.records)||holds.records.some(h=>!text(h.id)||!validEmail(h.email)||h.email!==normalize(h.email)||
+     !Number.isSafeInteger(h.attempts)||h.attempts<1||![h.firstHeldAt,h.lastAttemptAt,h.nextAttemptAt].every(Number.isFinite)||!text(h.reason))||
+     new Set(holds.records.map(h=>h.email)).size!==holds.records.length)throw Error('Invalid saved tag-sync holds');
+  const result={mode,recentChecked:0,fullChecked:0,missingMembers:0,skippedEmails:0,added:0,removed:0,
+   removalPolicy:'automatic-agent-status-v1',removableTags:REMOVABLE_HIVE_TAGS,protectedTags:'Every tag outside removableTags',
+   sourcePolicy:'validated-counted-source-v1',held:0,deferred:0,retried:0,resolvedHolds:0,
+   cycleComplete:false,fullTraversalComplete:false,fullCoverage:'in-progress',budgetExhausted:false};
+  async function reconcile(contact,deadline){
    const email=String(contact.email||'').trim().toLowerCase();
-   if(!/^\S+@\S+\.\S+$/.test(email))return;
-   const matches=await engine.hive('contacts?'+new URLSearchParams({email,limit:'200'}));
-   if(!Array.isArray(matches.data)||matches.next_cursor||!matches.data.length)throw Error('Incomplete email match');
-   if(matches.data.some(c=>!Array.isArray(c.tags)||String(c.email).trim().toLowerCase()!==email))throw Error('Incomplete current Hive contact tags');
+   if(!validEmail(email)){result.skippedEmails++;return;}
+   checkBudget(deadline);
+   const matches=listPage(await engine.hive('contacts?'+new URLSearchParams({email,limit:'200'})),'email match',{limit:200,complete:true});
+   if(matches.data.some(c=>typeof c.email!=='string'||normalize(c.email)!==email))throw Error('Mismatched email lookup');
+   if(!matches.data.length)throw new RecordHold('source-contact-not-found');
+   if(matches.data.some(c=>!Array.isArray(c.tags)||c.tags.some(t=>!text(t?.name))))throw new RecordHold('invalid-source-contact-tags');
    const hiveNames=[...new Set(matches.data.flatMap(c=>c.tags.map(t=>t.name)))];
    for(const role of ['Agent','Customer']){
     const row={email,role};let member;
+    checkBudget(deadline);
     try{member=await engine.mc(row,undefined,'GET');}catch(e){if(e.status!==404)throw e;result.missingMembers++;continue;}
-    if(!Array.isArray(member.tags))throw Error('Incomplete Mailchimp tags');
-    const changes=tagChanges(hiveNames,member.tags.map(t=>t.name),known);
-    if(apply&&changes.length)await engine.mc(row,{tags:changes},'POST','/tags');
+    if(!Array.isArray(member?.tags))throw Error('Incomplete Mailchimp tags');
+    const changes=tagChanges(hiveNames,member.tags.map(t=>t?.name),known);
+    if(apply&&changes.length){checkBudget(deadline);await engine.mc(row,{tags:changes},'POST','/tags');}
     result.added+=changes.filter(t=>t.status==='active').length;result.removed+=changes.filter(t=>t.status==='inactive').length;
+   }
+  }
+  async function hold(contact,error){
+   const email=normalize(contact.email);
+   if(!holds.records.some(h=>h.email===email)){
+    holds.records.push({id:contact.id,email,firstHeldAt:now(),lastAttemptAt:now(),attempts:1,nextAttemptAt:now()+backoff(1),reason:error.message});
+    // This must be durable BEFORE discovery acknowledges the pending contact.
+    await save(holdKey,holds);result.held++;
+   }
+  }
+  // At most ONE due hold per tick, oldest due first. Reserve its next attempt
+  // durably before I/O, so an interruption cannot starve other held contacts.
+  const due=holds.records.filter(h=>h.nextAttemptAt<=now()).sort((a,b)=>a.nextAttemptAt-b.nextAttemptAt||a.lastAttemptAt-b.lastAttemptAt||a.email.localeCompare(b.email))[0];
+  if(due&&now()-started<18000){
+   due.attempts++;due.lastAttemptAt=now();due.nextAttemptAt=now()+backoff(due.attempts);await save(holdKey,holds);result.retried++;
+   try{
+    await reconcile(due,18000);
+    holds.records=holds.records.filter(h=>h!==due);await save(holdKey,holds);result.resolvedHolds++;
+   }catch(error){
+    if(error instanceof RecordHold){due.reason=error.message;await save(holdKey,holds);}
+    else if(error instanceof TickBudget)result.budgetExhausted=true;
+    else throw error; // Auth, rate limit, transport, JSON, page and destination failures stop the run.
    }
   }
   // Fast pass checks changes; the full pass also checks unchanged imported contacts.
   for(const pass of ['recent','full']){
-   const key='tag-sync/all-'+result.mode+'-'+pass;
+   const key='tag-sync/all-'+mode+'-'+pass,deadline=pass==='recent'?18000:25000;
+   if(now()-started>=deadline){result.budgetExhausted=true;continue;}
    let state=await store.get(key,{type:'json'})||{cursor:null,cycleStarted:started,since:started-5*60000};
-   if(!state.pending?.length){
-    const query=new URLSearchParams({limit:'25'});
-    if(pass==='recent')query.set('updated_since',new Date(state.since).toISOString());
-    if(state.cursor)query.set('cursor',state.cursor);
-    const page=await engine.hive('contacts?'+query);
-    if(!Array.isArray(page.data))throw Error('Incomplete contact page');
-    state.pending=page.data.map(c=>({id:c.id,email:c.email}));state.next=page.next_cursor||null;state.total=page.total;
-    await store.setJSON(key,state);
+   if(!cursor(state.cursor)||![state.since,state.cycleStarted].every(Number.isFinite)||
+      Object.hasOwn(state,'pending')&&(!Array.isArray(state.pending)||!cursor(state.next)))throw Error('Invalid saved scan state');
+   if(!state.coverage){
+    state.coverage=emptyCoverage();
+    // Legacy pending work is consumed, but unknown earlier pages cannot be certified.
+    state.coverage.verified=state.cursor===null&&!Object.hasOwn(state,'pending');
    }
-   const deadline=pass==='recent'?18000:35000;
-   while(state.pending.length&&now()-started<deadline){
-    await reconcile(state.pending[0]);state.pending.shift();result[pass+'Checked']++;await store.setJSON(key,state);
+   let coverage=state.coverage;
+   if(coverage.version!==1||typeof coverage.verified!=='boolean'||!Array.isArray(coverage.ids)||!Array.isArray(coverage.cursors)||
+      coverage.ids.some(id=>!text(id))||new Set(coverage.ids).size!==coverage.ids.length||coverage.cursors.some(c=>!cursor(c))||
+      new Set(coverage.cursors).size!==coverage.cursors.length||!(coverage.total===null||Number.isSafeInteger(coverage.total)&&coverage.total>=0))throw Error('Invalid saved scan coverage');
+   if(state.restartRequired){
+    if(Object.hasOwn(state,'pending'))throw Error('Cannot restart pending work');
+    state.cursor=null;state.cycleStarted=now();state.coverage=coverage=emptyCoverage();delete state.restartRequired;
+    // Persist the deliberate restart before fetching; retain since/completion watermarks.
+    await save(key,state);
    }
-   if(!state.pending.length){
-    state.cursor=state.next;delete state.next;delete state.pending;
-    if(!state.cursor){
-     if(pass==='full'){result.cycleComplete=true;result.fullContacts=state.total;result.cycleMinutes=Math.round((now()-state.cycleStarted)/60000);}
-     // Overlap protects changes near the polling boundary.
-     state.since=state.cycleStarted-5*60000;state.cycleStarted=now();state.lastCycleComplete=now();
+   try{
+    if(!Object.hasOwn(state,'pending')){
+     const query=new URLSearchParams({limit:'25'});
+     if(pass==='recent')query.set('updated_since',new Date(state.since).toISOString());
+     if(state.cursor!==null)query.set('cursor',state.cursor);
+     checkBudget(deadline);
+     const page=listPage(await engine.hive('contacts?'+query),'contact page',{limit:25});
+     if(page.data.some(c=>!Object.hasOwn(c,'email')||!(c.email===null||typeof c.email==='string')))throw Error('Incomplete discovery contact');
+     const ids=page.data.map(c=>c.id),nextCount=coverage.ids.length+ids.length;
+     const problem=coverage.total!==null&&coverage.total!==page.total?'changed-total':
+      ids.some(id=>coverage.ids.includes(id))?'repeated-contact':
+      coverage.cursors.includes(state.cursor)||page.next_cursor!==null&&(page.next_cursor===state.cursor||coverage.cursors.includes(page.next_cursor))?'repeated-cursor':
+      coverage.verified&&(nextCount>page.total||page.next_cursor===null&&nextCount!==page.total)?'inconsistent-terminal-count':null;
+     if(problem){
+      // Do not accept this page or advance its cursor. The next tick starts a
+      // counted traversal with the SAME since filter; this is not a dedup reset.
+      state.restartRequired={reason:problem,at:now()};await save(key,state);throw Error('Unverified scan coverage: '+problem);
+     }
+     coverage.ids.push(...ids);coverage.cursors.push(state.cursor);coverage.total=page.total;
+     state.pending=page.data.map(c=>({id:c.id,email:c.email}));state.next=page.next_cursor;state.total=page.total;
+     await save(key,state);
     }
-    await store.setJSON(key,state);
-   }
+    while(state.pending.length){
+     checkBudget(deadline);
+     const contact=state.pending[0];
+     if(!text(contact?.id)||!Object.hasOwn(contact,'email'))throw Error('Invalid saved pending contact');
+     const existing=validEmail(contact.email)&&holds.records.some(h=>h.email===normalize(contact.email));
+     if(existing)result.deferred++;
+     else{
+      try{await reconcile(contact,deadline);result[pass+'Checked']++;}
+      catch(error){if(!(error instanceof RecordHold))throw error;await hold(contact,error);}
+     }
+     state.pending.shift();await save(key,state);
+    }
+    state.cursor=state.next;delete state.next;delete state.pending;
+    if(state.cursor===null){
+     const verified=coverage.verified&&coverage.ids.length===coverage.total;
+     if(pass==='full'){
+      result.fullCoverage=verified?'verified':'legacy-unverified';result.fullTraversalComplete=verified;
+      result.cycleComplete=verified&&holds.records.length===0;result.fullContacts=verified?coverage.ids.length:null;
+      result.cycleMinutes=Math.round((now()-state.cycleStarted)/60000);
+     }
+     if(verified){
+      // A held record has its own durable retry; advancing discovery cannot drop it.
+      state.since=state.cycleStarted-5*60000;state.lastTraversalComplete=now();
+      if(!holds.records.length){state.lastCycleComplete=now();state.lastVerifiedCycleComplete=now();}
+     }
+     state.cycleStarted=now();state.coverage=emptyCoverage();
+    }
+    await save(key,state);
+   }catch(error){if(!(error instanceof TickBudget))throw error;result.budgetExhausted=true;}
   }
-  await store.setJSON('tag-sync/last-'+result.mode,{...result,at:now()});return result;
+  result.unresolvedHolds=holds.records.length;result.partial=holds.records.length>0||result.budgetExhausted;
+  await save('tag-sync/last-'+mode,{...result,at:now()});return result;
  });
 }
