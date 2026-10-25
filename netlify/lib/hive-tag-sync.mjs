@@ -1,12 +1,23 @@
 const normalize=name=>name.trim().toLowerCase();
-const protectedTag=name=>/^review:/i.test(name)||normalize(name)==='feedback received';
+// Only these automatic agent-status tags are owned for removal. A current or
+// historical Hive catalog entry is NOT evidence of removal ownership.
+export const REMOVABLE_HIVE_TAGS=Object.freeze([
+ '1st time buying agent','new selling agent','repeat selling agent',
+ 'absent selling agent','absent buying agent','repeat buying agent',
+ 'super buying agent','vip buying agent','no business'
+]);
+const removableTags=new Set(REMOVABLE_HIVE_TAGS.map(normalize));
+// Preserve the existing addition boundary; review workflow tags have other owners.
+const protectedTag=name=>normalize(name).startsWith('review:')||normalize(name)==='feedback received';
+// Defense in depth if the removal allowlist is edited in the future.
+const operationalTag=name=>protectedTag(name)||normalize(name).startsWith('ref:')||normalize(name)==='google reviewed';
 export function tagChanges(hiveNames,mailchimpNames,knownHiveNames){
  if(![hiveNames,mailchimpNames,knownHiveNames].every(a=>Array.isArray(a)&&a.every(n=>typeof n==='string'&&n.trim())))throw Error('Incomplete tag data');
  const current=new Map(hiveNames.filter(n=>!protectedTag(n)).map(n=>[normalize(n),n]));
- const existing=new Set(mailchimpNames.map(normalize)),known=new Set(knownHiveNames.map(normalize));
+ const existing=new Set(mailchimpNames.map(normalize));
  return [
   ...[...current].filter(([key])=>!existing.has(key)).map(([,name])=>({name,status:'active'})),
-  ...mailchimpNames.filter(name=>!protectedTag(name)&&known.has(normalize(name))&&!current.has(normalize(name))).map(name=>({name,status:'inactive'}))
+  ...mailchimpNames.filter(name=>!operationalTag(name)&&removableTags.has(normalize(name))&&!current.has(normalize(name))).map(name=>({name,status:'inactive'}))
  ];
 }
 export async function reconcileHiveTags({engine,store,apply=false,now=()=>Date.now()}){
@@ -17,7 +28,7 @@ export async function reconcileHiveTags({engine,store,apply=false,now=()=>Date.n
   if(names.some(n=>typeof n!=='string'||!n.trim()))throw Error('Invalid Hive tag catalog');
   const previous=await store.get('tag-sync/catalog',{type:'json'})||[];
   const known=[...new Set([...previous,...names])];await store.setJSON('tag-sync/catalog',known);
-  const result={mode:apply?'live':'audit',recentChecked:0,fullChecked:0,missingMembers:0,added:0,removed:0,protectedTags:'REVIEW:* and feedback received',cycleComplete:false};
+  const result={mode:apply?'live':'audit',recentChecked:0,fullChecked:0,missingMembers:0,added:0,removed:0,removalPolicy:'automatic-agent-status-v1',removableTags:REMOVABLE_HIVE_TAGS,protectedTags:'Every tag outside removableTags',cycleComplete:false};
   async function reconcile(contact){
    const email=String(contact.email||'').trim().toLowerCase();
    if(!/^\S+@\S+\.\S+$/.test(email))return;
