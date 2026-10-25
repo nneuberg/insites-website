@@ -48,8 +48,9 @@ test('bad first record does not block healthy contacts or the full pass, includi
  await f.run();assert.equal(f.calls.filter(c=>c.url.includes('email=bad%40')).length,initialBadReads);assert.equal(f.writes.length,2);
  for(const role of ['Agent','Customer'])assert.ok(f.members.get(f.keyFor(role,bad.email)).tags.some(t=>t.name==='no business'));
 });
-test('repairing a held contact resolves it on a due retry and never replays tag side effects',async()=>{
+test('repairing a held contact resolves both audiences across due retries without replay',async()=>{
  const f=badFirst();await f.run();f.options.matches=validMatches;f.advance(300000);
+ const first=await f.run();assert.equal(first.retryAudiencesCompleted,1);assert.equal(first.resolvedHolds,0);assert.equal(first.unresolvedHolds,1);f.advance(300000);
  const r=await f.run();assert.equal(r.retried,1);assert.equal(r.resolvedHolds,1);assert.equal(r.unresolvedHolds,0);assert.equal(r.cycleComplete,true);
  assert.equal(f.writes.length,4);await f.run();assert.equal(f.writes.length,4);assert.deepEqual(await holds(f),[]);
 });
@@ -97,6 +98,7 @@ test('interruption after retry reservation lets the next due record proceed on r
 test('hold resolution checkpoint failure retains retry work and converges without replay',async()=>{
  let fail=false;const f=badFirst({beforeSave:(k,v)=>{if(fail&&k===holdKey&&v.records.length===0){fail=false;throw Error('resolution save failed');}}});
  await f.run();f.options.matches=validMatches;f.advance(300000);fail=true;
+ await f.run();f.advance(300000);
  await assert.rejects(f.run(),/resolution save failed/);assert.equal((await holds(f)).length,1);assert.equal(f.writes.length,4);
  f.advance(600000);await f.run();assert.deepEqual(await holds(f),[]);assert.equal(f.writes.length,4);
 });
@@ -150,11 +152,11 @@ test('interrupted processing retains counted pending IDs exactly once',async()=>
  await assert.rejects(f.run(),/full checkpoint failed/);const state=await f.store.get(full);assert.equal(state.pending.length,1);assert.deepEqual(state.coverage.ids,['fixture-one']);
  const r=await f.run();assert.equal(r.fullContacts,1);assert.equal(r.cycleComplete,true);assert.equal(f.writes.length,2);
 });
-test('budget exhaustion leaves work pending, does not create a hold, and resumes safely',async()=>{
+test('budget exhaustion durably retains slow work for bounded audience retries',async()=>{
  let f,slow=true;f=fixture({intercept:async(url,request,next)=>{const r=await next();if(slow&&url.includes('email=')){slow=false;f.advance(26000);}return r;}});
  const r=await f.run();assert.equal(r.budgetExhausted,true);assert.equal(r.partial,true);assert.equal(f.writes.length,0);
- assert.equal((await f.store.get(recent)).pending.length,1);assert.equal(await f.store.get(full),null);assert.deepEqual(await holds(f),[]);
- await f.run();assert.equal(f.writes.length,2);
+ assert.equal((await f.store.get(recent)).pending,undefined);assert.equal(await f.store.get(full),null);assert.equal((await holds(f))[0].reason,'reconciliation-budget');
+ f.advance(300000);await f.run();f.advance(300000);await f.run();assert.equal(f.writes.length,2);assert.deepEqual(await holds(f),[]);
 });
 test('at most 25 discovery contacts per pass and one held retry run in a tick',async()=>{
  const contacts=Array.from({length:25},(_,i)=>contact([],{id:'id-'+i,email:`fixture-${i}@example.invalid`}));
@@ -176,5 +178,6 @@ test('more records than the requested limit are rejected, not silently truncated
 });
 test('a zero-match hold can later recover without importing a missing Mailchimp member',async()=>{
  const f=fixture({matches:page([])});await f.run();f.members.clear();f.options.matches=validMatches;f.advance(300000);
+ await f.run();f.advance(300000);
  const r=await f.run();assert.equal(r.resolvedHolds,1);assert.equal(r.unresolvedHolds,0);assert.equal(f.writes.length,0);
 });

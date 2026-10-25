@@ -78,8 +78,12 @@ work, but it cannot claim complete reconciliation. `unresolvedHolds`, `held`,
 
 ## Isolated holds and recovery
 
-Only a valid complete email response containing invalid contact tag data or zero
-matches becomes an isolated hold. Auth, rate limiting, network/timeout, HTTP,
+A valid complete email response containing invalid contact tag data or zero
+matches becomes an isolated hold. A valid but slow discovery reconciliation
+that reaches its local work budget is also durably held with reason
+`reconciliation-budget`, before its pending item is acknowledged. This prevents
+the same record from repeatedly occupying the front of a discovery page.
+Auth, rate limiting, network/timeout, HTTP,
 JSON, malformed page/identity/email, destination and storage failures stop the
 run. Missing Mailchimp members (404) retain the existing skip behavior.
 
@@ -89,25 +93,49 @@ normalized email. A new hold is saved before the pending contact is removed.
 Storage failure stops processing. Repeated discovery of a held email does not
 bypass its retry schedule or repeatedly consume provider calls.
 
-At most one due hold is retried per tick, ordered by due time, last attempt and
-email. Backoff starts at five minutes, then ten, twenty, forty and at most sixty
-minutes. Holds never expire or silently disappear. The retry reservation is saved
-before provider I/O, so a crash cannot continually select the same record. A hold
-is removed only after reconciliation succeeds for both existing audience lookups.
-If the resolution checkpoint fails, a later retry re-reads current tags and
-converges without intentionally replaying completed changes. No alerts are sent.
+Retry policy `fresh-audience-progress-v1` attempts at most one audience on one
+due held record per tick, ordered by due time, last attempt and email. It saves
+the record reservation and rotates the audience before provider I/O, so a crash
+cannot continually select the same record or start every retry at Agent.
+Existing holds without audience progress migrate on their next reserved turn.
+Invalid saved progress stops the run rather than silently discarding work.
+
+For that audience, the current catalog, complete Hive email snapshot and current
+Mailchimp member are read concurrently. Every read must settle before proceeding;
+any global failure takes precedence over an isolated invalid contact. Catalog
+and source validation still precede every write. Neither Hive tags nor Mailchimp
+tags are cached between runs, and no saved mutation is replayed.
+
+The hold persists a hash of the normalized complete Hive tag union and the
+audiences completed against that union. If a fresh snapshot changes the union,
+earlier completion is invalidated durably before writing. Invalid tag data also
+clears completion. A successful audience is checkpointed; the hold is removed
+only when both audiences have completed against the same validated union.
+An interruption between a write, its completion checkpoint and hold removal
+causes later retries to read current tags again. Just-resolved emails encountered
+by discovery in that same run are acknowledged without restarting their work.
+
+Successful partial progress becomes due again after five minutes. Failure
+backoff starts at five minutes, then ten, twenty, forty and at most sixty minutes.
+Holds never expire or silently disappear. `retryAudiencesCompleted`, alongside
+`retried`, `resolvedHolds` and `unresolvedHolds`, reports partial progress. No
+alerts are sent.
 
 Each pass still fetches at most one 25-contact discovery page per tick. The retry
-and recent pass use an 18-second soft budget from run start; the full pass uses
-25 seconds (reduced from 35). Budget checks precede provider calls and pending
-acknowledgement is withheld until a record finishes. These are soft start limits:
-an in-flight request can take up to the shared engine's 12-second timeout, and
-the platform may terminate the run first. Checkpoints and the existing
-120-second lock expiry allow later recovery.
+and recent pass use an 18-second soft budget from run start; full-pass bookkeeping
+may continue to 25 seconds. New provider requests and contact work cannot start
+at or after 18 seconds, leaving the shared 12-second request timeout within the
+scheduled function's 30-second cap. A held audience needs at most two sequential
+provider rounds: concurrent reads, then an optional tag write. At 11.9 seconds
+per successful provider request the modeled work takes 23.8 seconds, rather
+than summing catalog, source, member and write delays. Storage latency and platform
+termination can still interrupt work; durable checkpoints and the existing
+120-second lock expiry allow recovery. These are soft limits, not a guarantee
+that all storage work will finish within a run.
 
 ## Verification
 
-Run `node --test tests/hive-tag-sync.test.mjs tests/hive-tag-source-guards.test.mjs`
+Run `node --test tests/hive-tag-sync.test.mjs tests/hive-tag-source-guards.test.mjs tests/hive-tag-retry-progress.test.mjs`
 for the focused suite and
 `node --test tests/*.test.mjs` for the aggregate repository suite. The focused
 suite uses only an injected fetcher, fake credentials, reserved-domain contacts
@@ -120,6 +148,11 @@ union, missing members, HTTP failures, ambiguous write responses, replay,
 checkpoint interruption, legacy migration, counted cursor progression, changed
 totals, deadline continuation, conditional lock contention, expired-lock recovery,
 durable hold failures, fair bounded retries, backoff and repaired-record recovery.
+Sustained-latency regressions use a virtual clock to model concurrent 9-second
+and 11.9-second provider responses, both audiences, required writes, source changes,
+crashes at each progress boundary, uncertain responses, and continued discovery
+of slow valid records alongside healthy contacts. All latencies remain below
+the existing per-request timeout; no real provider is slowed or fault-injected.
 The complete suite can also run under macOS `sandbox-exec` with network access
 denied. Existing subscribed/opt-out fields
 cannot be changed by these tag-only calls.
@@ -141,6 +174,10 @@ does not modify the gallery implementation or tests.
 - Global provider failures intentionally stop processing. A large hold backlog
   takes multiple ticks to retry; permanently invalid records remain visible until
   repaired. No immediate HTTP retry loop or outbound alert is introduced.
+- Audience completion is not a cross-provider transaction. Source changes detected
+  between attempts invalidate completion, but continuous source changes can delay
+  resolution. Concurrent external edits or valid-looking stale provider responses
+  cannot be prevented by these checkpoints.
 - Checkpoint and lock recovery are verified with mocks, not forced production
   interruptions. Live fixture retesting and counted full-scan proof are separate.
 

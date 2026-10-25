@@ -130,13 +130,15 @@ test('recent and full scans retain independent cursors, use limit 25 and finish 
  assert.ok(queries[0].updated_since);assert.equal(queries[1].updated_since,undefined);
  assert.equal(f.writes.length,2);
 });
-test('deadline interruption preserves pending page items before advancing its cursor',async()=>{
+test('deadline interruption durably holds the slow item and preserves the rest of its page',async()=>{
  let f;f=fixture({page:q=>q.has('cursor')?{data:[contact([],{id:'third'})],next_cursor:null,total:3}:{data:[contact(),contact([],{id:'second'})],next_cursor:'next',total:3},intercept:async(url,request,next)=>{
   if(url.includes('email=')&&f.now()===Date.parse('2026-10-25T12:00:00Z'))f.advance(19000);return next();
  }});
- await f.run();assert.equal((await f.store.get('tag-sync/all-live-recent')).pending.length,2);
+ await f.run();assert.equal((await f.store.get('tag-sync/all-live-recent')).pending.length,1);
+ assert.equal((await f.store.get('tag-sync/holds-live')).records.length,1);
  assert.equal((await f.store.get('tag-sync/all-live-recent')).cursor,null);
  await f.run();assert.equal((await f.store.get('tag-sync/all-live-recent')).cursor,'next');
+ assert.equal(f.writes.length,0);f.advance(300000);await f.run();f.advance(300000);await f.run();
  assert.equal(f.writes.length,2);
 });
 test('real engine lock prevents concurrent scans and releases after completion',async()=>{
