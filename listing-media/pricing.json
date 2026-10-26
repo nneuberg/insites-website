@@ -133,7 +133,9 @@
         "photography",
         "exterior",
         "basic-aerial",
-        "elevated-aerial"
+        "elevated-aerial",
+        "social",
+        "cinematic"
       ],
       "addons": []
     },
@@ -148,7 +150,9 @@
         "photography",
         "exterior",
         "basic-aerial",
-        "elevated-aerial"
+        "elevated-aerial",
+        "social",
+        "cinematic"
       ],
       "addons": []
     }
