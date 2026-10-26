@@ -29,7 +29,7 @@ export async function testHandler({policy,request,context,openStore,now=Date.now
   }
   return out({mode:'mock-only',deployId:context.deploy.id,counts});
  }
- const s=body.scenario,useId=`synthetic-${s}`,local=Object.create(store);
+ const s=body.scenario,useId=`synthetic-${s}`,local={get:store.get.bind(store),getWithMetadata:store.getWithMetadata.bind(store)};
  local.setJSON=async(k,row,options)=>{
   const result=await store.setJSON(k,row,options);
   if(result.modified&&k.startsWith('claims/')&&s==='intent-crash'&&row.state==='processing'&&await marker(`fault/${s}`))throw Error('synthetic-intent-write-interruption');
