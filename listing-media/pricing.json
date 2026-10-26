@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-12",
+  "updated": "2026-10-26",
   "currency": "USD",
   "includedPhotos": 25,
   "extraPhotoCents": 250,
@@ -104,7 +104,7 @@
       "id": "cinematic",
       "name": "Cinematic Showcase",
       "priceCents": 25000,
-      "description": "A cinematic showcase video that brings the home\u2019s spaces, features, and setting together in a polished presentation.",
+      "description": "A cinematic showcase video that brings the home’s spaces, features, and setting together in a polished presentation.",
       "addons": [],
       "examples": [
         {
@@ -120,6 +120,36 @@
       "priceCents": null,
       "addonPriceCents": 3500,
       "description": "A digital floor plan that helps buyers understand the layout of the home. Available as an add-on to another media service.",
+      "addons": []
+    },
+    {
+      "id": "virtual-staging",
+      "name": "Virtual Staging",
+      "description": "Digital furniture and decor added to your photos. Available only as an add-on to photo services; $3 per image.",
+      "priceCents": null,
+      "addonPriceCents": 300,
+      "unit": "image",
+      "eligibleServiceIds": [
+        "photography",
+        "exterior",
+        "basic-aerial",
+        "elevated-aerial"
+      ],
+      "addons": []
+    },
+    {
+      "id": "virtual-twilight",
+      "name": "Virtual Twilight",
+      "description": "Daytime photos edited for a twilight look. Available only as an add-on to photo services; $3 per image.",
+      "priceCents": null,
+      "addonPriceCents": 300,
+      "unit": "image",
+      "eligibleServiceIds": [
+        "photography",
+        "exterior",
+        "basic-aerial",
+        "elevated-aerial"
+      ],
       "addons": []
     }
   ]
