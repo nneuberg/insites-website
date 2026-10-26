@@ -1,0 +1,25 @@
+<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex,nofollow"><title>Private remaining recovery tests</title>
+<h1>Remaining synthetic recovery checks</h1><p>Run once on a fresh preview. One intentional function timeout; no real purchases. Allow about 3 minutes. Keep this tab open.</p>
+<button id="run">Run remaining cases once</button><pre id="result"></pre>
+<script type="module">
+const button=document.querySelector('#run'),output=document.querySelector('#result');let slot=0;
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+async function call(op,scenario,expectedTimeout=false){const n=slot++;let response;
+ try{response=await fetch('/.netlify/functions/claim-storage-test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op,scenario,slot:n})});}catch{if(expectedTimeout){output.textContent+='Transport ended; this alone is NOT proof of runtime termination.\n';return;}throw Error('Transport failure; stop without retry');}
+ const raw=await response.text();let result;try{result=JSON.parse(raw);}catch{if(expectedTimeout){output.textContent+=JSON.stringify({op,scenario,status:response.status,requiresLogVerification:true})+'\n';return;}throw Error('Non-JSON response; stop');}
+ output.textContent+=JSON.stringify({op,scenario,status:response.status,...result})+'\n';if(result.disabled||result.error)throw Error('Stopped: inspect before retry');return result;
+}
+button.onclick=async()=>{button.disabled=true;try{
+ await call('prepare','stale-owner');const old=call('claim','stale-owner');
+ let ready=false;for(let i=0;i<10;i++){await wait(500);if((await call('probe')).staleWaiting){ready=true;break;}}
+ if(!ready)throw Error('Stale worker not parked; stop');
+ await call('recover','stale-owner');await old;await call('recover','stale-owner');
+ const stale=await call('summary');if(!stale.staleOwnerPreserved||stale.states['stale-owner']?.state!=='issued'||stale.counts.posts!==1||stale.counts.purchases!==1)throw Error('Stale owner assertion failed');
+ await call('prepare','runtime-termination');const started=Date.now();await call('claim','runtime-termination',true);
+ const before=await call('summary');if(!before.terminationStarted||before.terminationReturned||before.states['runtime-termination']?.state!=='processing'||before.states['runtime-termination']?.receiptSaved)throw Error('Expected termination state not established; no retry');
+ output.textContent+='Waiting for original 120-second lease to expire before lookup-only recovery.\n';await wait(Math.max(0,130000-(Date.now()-started)));
+ await call('recover','runtime-termination');const end=await call('summary');
+ if(end.counts.posts!==2||end.counts.purchases!==2||end.counts.ledgerReceipts!==2||end.states['runtime-termination']?.state!=='issued')throw Error('Recovery count/state assertion failed');
+ output.textContent+='Remaining state assertions passed. Verify Netlify invocation timeout logs before calling this actual runtime termination.\n';
+}catch(error){output.textContent+=error.message+'\n';}};
+</script>
