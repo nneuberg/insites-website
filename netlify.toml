@@ -1,43 +1,7 @@
 [build]
-  publish = "."
+  base = "isolated-netlify-preview"
+  command = "node verify-build.mjs"
+  publish = "public"
   functions = "netlify/functions"
-
-[[redirects]]
-  from = "/api/google-reviews"
-  to = "/.netlify/functions/google-reviews"
-  status = 200
-  force = true
-
-[[redirects]]
-  from = "/inspections"
-  to = "/add-on"
-  status = 301
-  force = true
-
-[[headers]]
-  for = "/*"
-  [headers.values]
-    X-Content-Type-Options = "nosniff"
-
-[[redirects]]
-  from = "/refer"
-  to = "/referral/"
-  status = 301
-  force = true
-
-[[headers]]
-  for = "/referral*"
-  [headers.values]
-    X-Robots-Tag = "noindex, nofollow, noarchive"
-    Referrer-Policy = "no-referrer"
-
-[[redirects]]
-  from = "/api/referrals"
-  to = "/.netlify/functions/referral-submit"
-  status = 200
-  force = true
-
-[[redirects]]
-  from = "/api/referral-share"
-  to = "/.netlify/functions/referral-share"
-  status = 200
+[functions]
+  node_bundler = "esbuild"

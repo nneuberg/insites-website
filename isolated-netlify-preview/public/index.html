@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex,nofollow"><title>Private synthetic storage test</title>
+<h1>Private synthetic storage test</h1><p>Mock purchases only. No provider calls or customer records. Run once; preserve results if interrupted.</p>
+<button id="run">Run bounded test batch</button><pre id="result"></pre>
+<script type="module">
+const button=document.querySelector('#run'),output=document.querySelector('#result');let slot=0;
+async function call(op,scenario){const response=await fetch('/.netlify/functions/claim-storage-test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op,scenario,slot:slot++})});const result=await response.json();output.textContent+=JSON.stringify({op,scenario,status:response.status,...result})+'\n';if(result.disabled||result.error)throw Error('Stopped: inspect result before any retry');return result;}
+button.onclick=async()=>{button.disabled=true;try{
+ for(const op of ['create','cas']){const batch=await Promise.all(Array.from({length:8},()=>call(op)));if(batch.filter(x=>x.modified).length!==1)throw Error('Atomic write assertion failed');}
+ for(const s of ['ordinary','timeout','intent-crash','receipt-crash','ledger-failure']){
+  await call('prepare',s);await Promise.all(Array.from({length:8},()=>call('claim',s)));await call('recover',s);
+ }
+ const summary=await call('summary');if(summary.counts.posts!==4||summary.counts.purchases!==4||summary.counts.ledgerReceipts!==4)throw Error('Mock purchase/receipt count mismatch');
+ output.textContent+='Initial concurrency/recovery batch passed. Lease/fencing and actual process termination still need separate verification.\n';
+}catch(error){output.textContent+=error.message+'\n';}};
+</script>
