@@ -1,7 +1,9 @@
+import {isOwnedSyntheticInspection} from './referral-test-isolation.mjs';
 import {matchReferral} from './referral-hive.mjs';
 const validId=id=>typeof id==='string'&&/^[-a-zA-Z0-9_]{1,100}$/.test(id);
 export async function reconcileInspection({id,eventId='',read,callLedger,snapshot,serviceIds=[],now=()=>Date.now()}){
  if(!validId(id))throw Error('Invalid inspection ID');
+ if(isOwnedSyntheticInspection(id,snapshot))return {matched:false,held:false,ignoredSynthetic:true};
  const observedAt=new Date(now()).toISOString();
  let inspection;
  try{inspection=await read('inspections/'+encodeURIComponent(id));if(inspection.id!==id)throw Error('Inspection mismatch');}
@@ -20,10 +22,11 @@ export async function reconcileTick({read,callLedger,loadState,saveState,pending
  if(snapshot.version!=='2026-10-22-reconcile')throw Error('Referral ledger update required');
  if(!Array.isArray(snapshot.codes)||!Array.isArray(snapshot.uses))throw Error('Invalid ledger snapshot');
  const state=(await loadState())||{cursor:null,items:[],nextCursor:null,reviewOffset:0};
- state.retryIds=state.retryIds||[];
+ state.retryIds=(state.retryIds||[]).filter(id=>!isOwnedSyntheticInspection(id,snapshot));
  const report={read:0,matched:0,held:0,errors:0,scanComplete:false};
  const seen=new Map();
  const work=async(id,eventId='')=>{
+  if(isOwnedSyntheticInspection(id,snapshot)){seen.set(id,true);return true;}
   if(seen.has(id))return seen.get(id);
   if(report.read>=maxItems||now()-started>=budgetMs)return false;
   report.read++;
@@ -33,7 +36,7 @@ export async function reconcileTick({read,callLedger,loadState,saveState,pending
  // One event and one known referral per tick leave capacity for discovering new referrals.
  for(const job of pending.slice(0,1)){if(await work(job.inspectionId,job.eventId))await ack(job.key);}
  if(state.retryIds.length){const retry=state.retryIds.shift();if(!await work(retry))state.retryIds.push(retry);await saveState(state);}
- const known=snapshot.uses.filter(u=>validId(u['Hive Inspection ID']));
+ const known=snapshot.uses.filter(u=>validId(u['Hive Inspection ID'])&&!isOwnedSyntheticInspection(u['Hive Inspection ID'],snapshot));
  if(known.length){const at=(state.reviewOffset||0)%known.length;await work(known[at]['Hive Inspection ID']);state.reviewOffset=(at+1)%known.length;}
  if(!state.items?.length&&report.read<maxItems&&now()-started<budgetMs){
   const query=new URLSearchParams({limit:'5'});if(state.cursor)query.set('cursor',state.cursor);
