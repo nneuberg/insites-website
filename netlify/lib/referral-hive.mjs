@@ -14,13 +14,14 @@ export function verifyHive(raw,headers,secret,now=Date.now()){
 export function hiveReader(env=process.env,fetcher=fetch){
  if(!env.HIVE_API_KEY)throw Error('Hive connection missing');
  return async(path)=>{
-  if(!/^inspections(?:\?|\/|$)/.test(path))throw Error('Unsupported read');
+  if(!/^inspections(?:\?|\/|$)/.test(path)&&!/^contacts\/stats\?/.test(path)&&!/^contacts\?/.test(path))throw Error('Unsupported read');
   const r=await fetcher('https://api.hiveinspect.com/v1/'+path,{headers:{Authorization:'Bearer '+env.HIVE_API_KEY},signal:AbortSignal.timeout(12000)});
   if(!r.ok)throw Error('Hive read failed ('+r.status+')');return r.json();
  };
 }
 // This adapter deliberately leaves facts absent from Hive's contract unknown.
-// Approved completion rule: published report plus elapsed scheduled end.
+// Legacy discovery inference only; NOT trusted claim completion evidence.
+// Claim qualification requires the signed completion record or operator evidence.
 // Record first observation rather than backdating publication to the scheduled end.
 // paid is not refund/dispute clearance.
 export function inspectionFacts(i,{serviceIds=[],now=Date.now(),previousUse=null}={}){
