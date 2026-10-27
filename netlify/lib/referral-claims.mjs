@@ -7,8 +7,12 @@ export function createClaims({store,provider,ledger,vault,enabled=false,now=()=>
  const save=async(token,row)=>{const current=await store.getWithMetadata(key(token),{type:'json'});if(!current||JSON.stringify(current.data)!==snapshots.get(row))throw Error('Claim changed; reload');const result=await store.setJSON(key(token),row,{onlyIfMatch:current.etag});if(!result.modified)throw Error('Claim changed; reload');snapshots.set(row,JSON.stringify(row));};
  async function locked(id,fn){const k='claim-locks/'+hash(id),owner=randomBytes(16).toString('hex'),old=await store.getWithMetadata(k,{type:'json'});if(old?.data.until>now())throw Error('Claim is processing');const held=await store.setJSON(k,{owner,until:now()+120000},old?{onlyIfMatch:old.etag}:{onlyIfNew:true});if(!held.modified)throw Error('Claim is processing');const guard=async()=>{const held=await store.getWithMetadata(k,{type:'json'});if(held?.data.owner!==owner||held.data.until<=now())throw Error('Claim lease expired');};try{return await fn(guard);}finally{const current=await store.getWithMetadata(k,{type:'json'});if(current?.data.owner===owner)await store.setJSON(k,{owner,until:0},{onlyIfMatch:current.etag});}}
  const requireRow=async token=>{if(!tokenOK(token))throw Error('Claim unavailable');const row=await get(token);if(!row)throw Error('Claim unavailable');return row;};
+ const intentValid=i=>i&&i.productId==='OKMHM2X2OHYV'&&i.product==='Amazon.com gift card'&&i.amount===25&&i.currency==='USD'&&i.delivery==='LINK';
+ const matchingIntent=row=>intentValid(row.purchaseIntent)&&JSON.stringify(row.purchaseIntent)===JSON.stringify(provider.purchaseIntent);
  async function receipt(row,order){
   const reward=order?.rewards?.[0];
+  if(!intentValid(row.purchaseIntent))throw Error('Purchase intent unavailable');
+  if(reward&&Object.hasOwn(reward,'products')&&(!Array.isArray(reward.products)||reward.products.length!==1||reward.products[0]!==row.purchaseIntent.productId))throw Error('Product mismatch');
   if(order?.external_id!==row.externalId||order?.status!=='EXECUTED'||order.rewards?.length!==1||!order.id||!reward?.id||reward.value?.denomination!==25||reward.value?.currency_code!=='USD'||reward.recipient?.email?.toLowerCase()!==row.email||reward.delivery?.method!=='LINK'||!Number.isFinite(Date.parse(order.created_at)))throw Error('Order not yet verified');
   return {orderId:order.id,rewardId:reward.id,issuedAt:order.created_at};
  }
@@ -16,12 +20,13 @@ export function createClaims({store,provider,ledger,vault,enabled=false,now=()=>
   // Internal operator workflow only; no public issuance endpoint or sender.
   async prepare(useId){if(!enabled)throw Error('Claims disabled');return locked('use:'+useId,async()=>{
    if(!vault)throw Error('Claim recovery encryption required');
+   if(!intentValid(provider.purchaseIntent))throw Error('Verified Amazon purchase intent required');
    const index='claim-uses/'+hash(useId);let existing=await store.get(index,{type:'json'});
    if(!existing){
     const eligible=await ledger('claimCandidate',{useId});if(!eligible.ready)throw Error('Referral not eligible');
     if(typeof eligible.name!=='string'||!eligible.name.trim()||typeof eligible.email!=='string'||!/^\S+@\S+\.\S+$/.test(eligible.email))throw Error('Invalid owner');
     const token=randomBytes(32).toString('hex'),externalId='insites-referral-'+hash(useId);
-    const row={useId,externalId,email:eligible.email.trim().toLowerCase(),name:eligible.name.trim(),state:'available',createdAt:now()};
+    const row={useId,externalId,purchaseIntent:structuredClone(provider.purchaseIntent),email:eligible.email.trim().toLowerCase(),name:eligible.name.trim(),state:'available',createdAt:now()};
     const proposed={claimKey:key(token),initial:row,capability:vault.seal({token},index)};
     const written=await store.setJSON(index,proposed,{onlyIfNew:true});
     existing=written.modified?proposed:await store.get(index,{type:'json'});
@@ -35,16 +40,20 @@ export function createClaims({store,provider,ledger,vault,enabled=false,now=()=>
   async releaseHeld(token,evidence,commandId){if(!evidence?.providerConfirmedNeverSubmitted||typeof evidence.reference!=='string'||!evidence.reference.trim()||!/^[-a-zA-Z0-9_]{16,100}$/.test(commandId||'')||!evidence.expectedAttemptId)throw Error('Attempt-bound provider non-submission evidence required');const first=await requireRow(token);return locked('use:'+first.useId,async()=>{const row=await requireRow(token);if(row.consumedReleaseCommands?.includes(commandId))return {released:false,replayed:true};if(row.state!=='reconciling'||row.orderId||row.revokedAt||row.attemptId!==evidence.expectedAttemptId)throw Error('Not releasable');if(await provider.lookup(row.externalId))throw Error('Provider order exists');row.recoveryEvidence=evidence.reference;row.previousAttemptAt=row.attemptedAt;row.consumedReleaseCommands=[...(row.consumedReleaseCommands||[]),commandId];delete row.attemptedAt;row.state='available';await save(token,row);return {released:true};});},
   // Operator-only recovery: revocation blocks access, not accounting for an order already attempted.
   async reconcile(token){const first=await requireRow(token);return locked('use:'+first.useId,async()=>{const row=await requireRow(token);if(!row.attemptedAt)return {state:row.state};if(!row.orderId){const order=await provider.lookup(row.externalId);if(!order)return {state:'reconciling'};Object.assign(row,await receipt(row,order),{state:'issued'});await save(token,row);}if(!row.ledgerSynced){await ledger('recordClaimIssued',{useId:row.useId,externalId:row.externalId,rewardId:row.rewardId,issuedAt:row.issuedAt});row.ledgerSynced=true;await save(token,row);}return {state:row.state,revoked:!!row.revokedAt};});},
-  async details(token){const row=await requireRow(token);return {state:row.revokedAt?'revoked':(!row.attemptedAt&&row.expiresAt&&now()>=row.expiresAt?'expired':row.state),amount:25,currency:'USD',product:'Amazon.com gift card',enabled};},
+  async details(token){const row=await requireRow(token);return {state:row.revokedAt?'revoked':(!row.attemptedAt&&row.expiresAt&&now()>=row.expiresAt?'expired':row.state),amount:25,currency:'USD',product:intentValid(row.purchaseIntent)?row.purchaseIntent.product:null,enabled:!!(enabled&&intentValid(row.purchaseIntent))};},
   async claim(token,affirmed){if(!enabled)throw Error('Claims disabled');if(affirmed!==true)throw Error('Affirmative claim required');const first=await requireRow(token);
    return locked('use:'+first.useId,async guard=>{
     const row=await requireRow(token);
     if(row.revokedAt)throw Error('Claim revoked');
     if(!row.attemptedAt&&(row.revokedAt||(row.expiresAt&&now()>=row.expiresAt)))throw Error('Claim unavailable');
     if(!row.attemptedAt){
+     if(!matchingIntent(row))throw Error('Purchase configuration changed');
      // Existing ledger atomically reserves one reward per inspection/new client.
      // A repeated reservation is allowed only for this stable external order ID.
-     await guard();await ledger('reserveClaimReward',{useId:row.useId,externalId:row.externalId,email:row.email});
+     await guard();const reservation=await ledger('reserveClaimReward',{useId:row.useId,externalId:row.externalId,email:row.email});
+     // Prepared ledger returns exactly {reserved:true} after owner/eligibility/
+     // canonical-customer checks under ScriptLock. Top-level transport ok is insufficient.
+     if(!reservation||Array.isArray(reservation)||reservation.reserved!==true)throw Error('Reservation not confirmed');
      row.attemptedAt=now();row.attemptId=randomBytes(16).toString('hex');row.state='processing';await save(token,row);
      try{await guard();const order=await provider.create({externalId:row.externalId,name:row.name,email:row.email});Object.assign(row,await receipt(row,order),{state:'issued'});await save(token,row);}catch(error){row.state='reconciling';row.attention=error.status===401?'authentication-rejected':error.status===403?'permission-rejected':[400,422].includes(error.status)?'validation-rejected':error.status===402?'insufficient-funds':error.status===409?'provider-conflict':error.status===429?'rate-limited':'outcome-unverified';if(Number.isInteger(error.status)&&error.status>=400&&error.status<=599)row.lastProviderHttpStatus=error.status;await save(token,row);return {state:row.state};}
     }else if(row.state!=='issued'){
