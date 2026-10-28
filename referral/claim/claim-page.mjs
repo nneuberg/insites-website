@@ -1,5 +1,5 @@
 export function showClaimState(root,state){
- const messages={expired:'This claim link has expired. Please contact Neal for help.',revoked:'This claim is no longer available. Please contact Neal for help.',invalid:'Please open the private claim link provided by InSites.',unavailable:'Reward claims are not yet available.',processing:'Your claim is being processed. Please return later; do not submit another claim.',reconciling:'We’re checking your claim. Please return later; we will not place a second order while checking.'};
+ const messages={held:'Your reward is reserved, but cannot be issued yet. No purchase was attempted. Please return later or contact Neal.',expired:'This claim link has expired. Please contact Neal for help.',revoked:'This claim is no longer available. Please contact Neal for help.',invalid:'Please open the private claim link provided by InSites.',unavailable:'Reward claims are not yet available.',processing:'Your claim is being processed. Please return later; do not submit another claim.',reconciling:'We’re checking your claim. Please return later; we will not place a second order while checking.'};
  if(!messages[state])return false;
  root.getElementById('form').hidden=true;
  root.getElementById('status').textContent=messages[state];return true;
@@ -48,9 +48,9 @@ export async function initializeClaimPage({root,token,enabled=false,preview=fals
   const value=await response.json();
   if(value.enabled!==true||value.amount!==25||value.currency!=='USD'||value.product!=='Amazon.com gift card')throw Error('unverified-entitlement');
   if(['expired','revoked','processing','reconciling'].includes(value.state)){showClaimState(root,value.state);return;}
-  if(!['available','issued'].includes(value.state))throw Error('unexpected-state');
+  if(!['available','issued','held'].includes(value.state))throw Error('unexpected-state');
   bindClaimPage({...args,entitlementVerified:true});
-  root.getElementById('status').textContent=value.state==='issued'?'This gift card has already been issued. Confirm below to retrieve it; this will not buy another card.':'Your stored invitation is recognized. Eligibility is checked again when you confirm.';
+  root.getElementById('status').textContent=value.state==='issued'?'This gift card has already been issued. Confirm below to retrieve it; this will not buy another card.':value.state==='held'?'Your reward is on hold. Confirming checks availability again; it will not create a duplicate reward.':'Your stored invitation is recognized. Eligibility is checked again when you confirm.';
   if(value.state==='issued')root.getElementById('claim').textContent='Access my existing gift card';
  }catch{showClaimState(root,'unavailable');}
 }
