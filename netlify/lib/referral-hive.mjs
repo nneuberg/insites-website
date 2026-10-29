@@ -11,11 +11,11 @@ export function verifyHive(raw,headers,secret,now=Date.now()){
  const expected=createHmac('sha256',secret).update(match[1]+'.').update(raw).digest();
  if(!timingSafeEqual(expected,Buffer.from(match[2],'hex')))throw Error('Unauthorized');
 }
-export function hiveReader(env=process.env,fetcher=fetch){
+export function hiveReader(env=process.env,fetcher=fetch,transport=null){
  if(!env.HIVE_API_KEY)throw Error('Hive connection missing');
  return async(path)=>{
   if(!/^inspections(?:\?|\/|$)/.test(path)&&!/^contacts\/stats\?/.test(path)&&!/^contacts\?/.test(path))throw Error('Unsupported read');
-  const r=await fetcher('https://api.hiveinspect.com/v1/'+path,{headers:{Authorization:'Bearer '+env.HIVE_API_KEY},signal:AbortSignal.timeout(12000)});
+  const r=transport?await transport.request(path):await fetcher('https://api.hiveinspect.com/v1/'+path,{headers:{Authorization:'Bearer '+env.HIVE_API_KEY},signal:AbortSignal.timeout(12000)});
   if(!r.ok)throw Error('Hive read failed ('+r.status+')');return r.json();
  };
 }

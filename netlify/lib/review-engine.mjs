@@ -3,7 +3,7 @@ import {queueLowRating,deliverLowRating} from './review-low-rating.mjs';
 import {inReviewScope,excludedRequest,roleCutoff} from './review-scope.mjs';
 import {createHash,randomBytes} from 'node:crypto';
 import {AUDIENCES,DAY,ORIGIN,eligibleRecipients,referralDates,dueStage,validToken} from './review-policy.mjs';
-export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.now(),hivePaused=false}){
+export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.now(),hivePaused=false,hiveTransport=null,sourceContact=null}){
  const inLaunchScope=row=>inReviewScope(row,env);
  const hash=s=>createHash('sha256').update(s).digest('hex');
  const rowKey=t=>'requests/'+t;
@@ -15,7 +15,8 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  async function hive(path,body){
   if(hivePaused)throw new HiveUnavailable();
   if(!env.HIVE_API_KEY)throw new HiveUnavailable();
-  try{return await api('https://api.hiveinspect.com/v1/'+path,{method:body?'PATCH':'GET',headers:{Authorization:'Bearer '+env.HIVE_API_KEY,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});}
+  try{if(hiveTransport){const response=await hiveTransport.request(path,{method:body?'PATCH':'GET',...(body?{body}:{})});return response.status===204?null:response.json();}
+   return await api('https://api.hiveinspect.com/v1/'+path,{method:body?'PATCH':'GET',headers:{Authorization:'Bearer '+env.HIVE_API_KEY,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});}
   catch(error){throw new HiveUnavailable(error.status||503);}
  }
  async function mc(row,body,method='PATCH',suffix=''){
@@ -96,7 +97,14 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   let added=0;
   for(const original of eligibleRecipients(inspection,now())){
    if(original.endedAt<cutoff)continue;
-   const contact=await hive('contacts/'+encodeURIComponent(original.contactId));
+   // Already-enrolled people require no new source lookup. Recheck under the
+   // existing lock below still handles concurrent enrollment safely.
+   const priorIndexes=await Promise.all(['person:'+original.email,'Customer:'+original.email,'Agent:'+original.email].map(k=>store.get('people/'+hash(k),{type:'json'})));
+   if((await Promise.all(priorIndexes.filter(Boolean).map(index=>get(index.token)))).some(Boolean))continue;
+   if(hivePaused)throw new HiveUnavailable();
+   let contact;
+   try{contact=sourceContact?await sourceContact(original.contactId):await hive('contacts/'+encodeURIComponent(original.contactId));}
+   catch(error){if(error?.code==='HIVE_SOURCE_DEFERRED')throw new HiveUnavailable();throw error;}
    if(contact.tags?.some(t=>t.name.toLowerCase()==='google reviewed'))continue;
    // A person linked as an agent elsewhere must never receive a client reward invitation.
    const person={...original,role:contact.roles?.some(r=>['Buyer Agent','Seller Agent','Listing Agent','Agent'].includes(r))?'Agent':original.role};

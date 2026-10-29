@@ -1,19 +1,17 @@
+import {SOURCE_PLAN} from '../lib/hive-source-sync.mjs';
+import {sourceServices} from '../lib/hive-source-runtime.mjs';
+import {dispatchSourceChanges} from '../lib/hive-source-dispatch.mjs';
+import {reconcileChangedReferrals} from '../lib/hive-source-consumers.mjs';
 import {HIVE_INCIDENT} from '../lib/hive-incident.mjs';
 import {APPROVED_REFERRAL_FULL_SERVICE_IDS} from '../lib/referral-service-catalog.mjs';
-import {hiveReader} from '../lib/referral-hive.mjs';
 import {ledger} from '../lib/referral-transport.mjs';
-import {reconcileTick} from '../lib/referral-reconcile.mjs';
-export default async()=>{
+export default async(_request,context)=>{
  if(HIVE_INCIDENT.paused){console.log('Hive API work deferred: monthly quota incident');return new Response(null,{status:204});}
+ if(context?.deploy?.context!=='production')return new Response(null,{status:204});
  if(process.env.REFERRAL_HIVE_SYNC_ENABLED!=='true'){console.log('Referral Hive sync is disabled');return new Response(null,{status:204});}
- const {getStore}=await import('@netlify/blobs');
- const state=getStore({name:'insites-referral-sync',consistency:'strong'});
- const queue=getStore({name:'insites-referral-hive-events',consistency:'strong'});
- const listed=await queue.list({prefix:'pending/'});
- const pending=[];
- for(const item of listed.blobs.slice(0,1)){const job=await queue.get(item.key,{type:'json'});if(job)pending.push({...job,key:item.key});}
- const report=await reconcileTick({read:hiveReader(),callLedger:(a,d)=>ledger(a,d,process.env,10000),loadState:()=>state.get('cursor',{type:'json'}),saveState:s=>state.setJSON('cursor',s),pending,ack:key=>queue.delete(key),serviceIds:APPROVED_REFERRAL_FULL_SERVICE_IDS});
- const result={...report,checkedAt:new Date().toISOString(),mode:'LEDGER ONLY; no emails or rewards'};
- await state.setJSON('latest',result);console.log(JSON.stringify(result));return new Response(null,{status:204});
+ const services=sourceServices(context);
+ if(!SOURCE_PLAN.enabled||!SOURCE_PLAN.referralReconciliationEnabled||!SOURCE_PLAN.ledgerFencingVerified)return new Response(null,{status:204});
+ try{await dispatchSourceChanges({kind:'referrals',store:services.store,process:inspectionIds=>reconcileChangedReferrals({inspectionIds,view:services.view,callLedger:(a,d,options)=>ledger(a,d,process.env,8000,options),checkpointStore:services.store,locked:services.withLease,serviceIds:APPROVED_REFERRAL_FULL_SERVICE_IDS})});}catch{console.error('Referral source work retained');}
+ return new Response(null,{status:204});
 };
 export const config={schedule:'*/5 * * * *'};

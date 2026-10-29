@@ -57,6 +57,19 @@ function rewardReady(r,now=Date.now()) {
  * Script properties: REFERRAL_LEDGER_SECRET (random 32+ bytes), REFERRAL_SHEET_ID.
  * Keep script and sheet editors limited to trusted operators.
  */
+var SOURCE_WRITE_LEASE = null;
+function assertSourceWriteLease(){
+ if(!SOURCE_WRITE_LEASE)return;
+ if(Date.now()>=SOURCE_WRITE_LEASE.deadline)throw Error("Source write deadline expired");
+ var current=JSON.parse(PropertiesService.getScriptProperties().getProperty("HIVE_SOURCE_FENCE_V1")||"null");
+ if(!current||current.fence!==SOURCE_WRITE_LEASE.fence||current.owner!==SOURCE_WRITE_LEASE.owner)throw Error("Stale source writer");
+}
+function acceptSourceWriteLease(value){
+ if(!value||value.scope!=="hive-referral-changed"||typeof value.owner!=="string"||!/^[-a-zA-Z0-9]{1,100}$/.test(value.owner)||!Number.isSafeInteger(value.fence)||value.fence<1||!Number.isSafeInteger(value.deadline)||value.deadline<=Date.now()||value.deadline>Date.now()+10000)throw Error("Invalid source lease");
+ var props=PropertiesService.getScriptProperties(),prior=JSON.parse(props.getProperty("HIVE_SOURCE_FENCE_V1")||"null");
+ if(prior&&(prior.fence>value.fence||prior.fence===value.fence&&prior.owner!==value.owner))throw Error("Stale source fence");
+ props.setProperty("HIVE_SOURCE_FENCE_V1",JSON.stringify(value));SOURCE_WRITE_LEASE=value;assertSourceWriteLease();
+}
 function doPost(e) {
  try {
   var envelope=JSON.parse(e.postData.contents),secret=PropertiesService.getScriptProperties().getProperty('REFERRAL_LEDGER_SECRET');
@@ -65,7 +78,7 @@ function doPost(e) {
   var expected=bytes.map(function(b){return ('0'+((b+256)%256).toString(16)).slice(-2);}).join('');
   if(!constantEqual(expected,envelope.signature))throw Error('Unauthorized');
   var request=JSON.parse(envelope.payload),lock=LockService.getScriptLock();lock.waitLock(15000);
-  try {return output({ok:true,data:dispatch(request.action,request.data)});}finally{lock.releaseLock();}
+  try {if(request.sourceLease)acceptSourceWriteLease(request.sourceLease);return output({ok:true,data:dispatch(request.action,request.data)});}finally{SOURCE_WRITE_LEASE=null;lock.releaseLock();}
  }catch(error){return output({ok:false,error:'Operation failed'});}
 }
 function output(value){return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON);}
@@ -74,7 +87,7 @@ function book(){var id=PropertiesService.getScriptProperties().getProperty('REFE
 function table(name){var s=book().getSheetByName(name);if(!s)throw Error('Missing tab');return s;}
 function records(name){var values=table(name).getDataRange().getDisplayValues(),headers=values.shift();return values.filter(function(row){return row[0];}).map(function(row){var o={};headers.forEach(function(key,i){o[key]=row[i];});return o;});}
 function safeCell(v){v=v==null?'':String(v);return /^[=+\-@]/.test(v)?"'"+v:v;}
-function writeRecord(name,record,key){var s=table(name),values=s.getDataRange().getDisplayValues(),headers=values[0],index=headers.indexOf(key),row=values.findIndex(function(r,i){return i>0&&r[index]===String(record[key]);});if(row<0)row=s.getLastRow();s.getRange(row+1,1,1,headers.length).setValues([headers.map(function(h){return safeCell(record[h]);})]);SpreadsheetApp.flush();}
+function writeRecord(name,record,key){var s=table(name),values=s.getDataRange().getDisplayValues(),headers=values[0],index=headers.indexOf(key),row=values.findIndex(function(r,i){return i>0&&r[index]===String(record[key]);});if(row<0)row=s.getLastRow();assertSourceWriteLease();s.getRange(row+1,1,1,headers.length).setValues([headers.map(function(h){return safeCell(record[h]);})]);SpreadsheetApp.flush();}
 function dispatch(action,data){
  if(['holdCodeUse','codeSnapshot','prepareShare','prepareLowCodeAlert','lowCodeAlertSent','recordCodeUse','reserveCodeReward','codeRewardSent','codeRewardStatus','prepareFollowup','followupSent','unsubscribeFollowups'].includes(action))return codeDispatch(action,data);
  throw Error('Retired or unknown operation');

@@ -3,7 +3,7 @@
  */
 function codeDispatch(action,data) {
  var now=new Date().toISOString(), codes=records('Codes'), shares=records('Shares');
- if(action==='codeSnapshot')return {version:'2026-10-22-reconcile',codes:codes,shares:shares,uses:records('CodeUses')};
+ if(action==='codeSnapshot')return {version:'2026-10-22-reconcile',sourceFencing:'v1',codes:codes,shares:shares,uses:records('CodeUses')};
  if(action==='prepareShare') {
   if(!/^[-a-f0-9]{36}$/i.test(data.shareId||'')||! /^[a-f0-9]{64}$/.test(data.requestHash||''))throw Error('Invalid request');
   if(data.friendEmail||data.friendName||data.channel)throw Error('Only referrer details accepted');
