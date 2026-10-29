@@ -1,8 +1,10 @@
+import {HIVE_INCIDENT} from '../lib/hive-incident.mjs';
 import {APPROVED_REFERRAL_FULL_SERVICE_IDS} from '../lib/referral-service-catalog.mjs';
 import {hiveReader} from '../lib/referral-hive.mjs';
 import {ledger} from '../lib/referral-transport.mjs';
 import {reconcileTick} from '../lib/referral-reconcile.mjs';
 export default async()=>{
+ if(HIVE_INCIDENT.paused){console.log('Hive API work deferred: monthly quota incident');return new Response(null,{status:204});}
  if(process.env.REFERRAL_HIVE_SYNC_ENABLED!=='true'){console.log('Referral Hive sync is disabled');return new Response(null,{status:204});}
  const {getStore}=await import('@netlify/blobs');
  const state=getStore({name:'insites-referral-sync',consistency:'strong'});

@@ -1,8 +1,9 @@
+import {HiveUnavailable,hiveUnavailable} from './hive-incident.mjs';
 import {queueLowRating,deliverLowRating} from './review-low-rating.mjs';
 import {inReviewScope,excludedRequest,roleCutoff} from './review-scope.mjs';
 import {createHash,randomBytes} from 'node:crypto';
 import {AUDIENCES,DAY,ORIGIN,eligibleRecipients,referralDates,dueStage,validToken} from './review-policy.mjs';
-export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.now()}){
+export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.now(),hivePaused=false}){
  const inLaunchScope=row=>inReviewScope(row,env);
  const hash=s=>createHash('sha256').update(s).digest('hex');
  const rowKey=t=>'requests/'+t;
@@ -11,7 +12,12 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   if(!r.ok){const e=new Error('API request failed');e.status=r.status;throw e;}
   return r.status===204?null:r.json();
  }
- async function hive(path,body){if(!env.HIVE_API_KEY)throw Error('Hive not configured');return api('https://api.hiveinspect.com/v1/'+path,{method:body?'PATCH':'GET',headers:{Authorization:'Bearer '+env.HIVE_API_KEY,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});}
+ async function hive(path,body){
+  if(hivePaused)throw new HiveUnavailable();
+  if(!env.HIVE_API_KEY)throw new HiveUnavailable();
+  try{return await api('https://api.hiveinspect.com/v1/'+path,{method:body?'PATCH':'GET',headers:{Authorization:'Bearer '+env.HIVE_API_KEY,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});}
+  catch(error){throw new HiveUnavailable(error.status||503);}
+ }
  async function mc(row,body,method='PATCH',suffix=''){
   const dc=env.MAILCHIMP_API_KEY?.split('-').at(-1);if(!/^us\d+$/.test(dc||''))throw Error('Mailchimp not configured');
   const id=createHash('md5').update(row.email).digest('hex');
@@ -156,8 +162,9 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  }
  async function run({discover=true}={}){
   if(env.REVIEW_ENABLED!=='true'||!Number.isFinite(Date.parse(env.REVIEW_START_AFTER||'')))return {paused:true};
-  let read=0;
+  let read=0,discoveryDeferred=false;
   if(discover){
+  try{
   let cursor=(await store.get('scan',{type:'json'}))?.cursor;
   // Bound each run below provider limits; cursor resumes on the following run.
   const filters=new URLSearchParams({limit:'5',status:'confirmed',paid:'true',agreements_signed:'true',published:'true',scheduled_after:new Date(Date.parse(env.REVIEW_START_AFTER)-DAY).toISOString(),scheduled_before:new Date(now()).toISOString()});
@@ -165,18 +172,23 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   const list=await hive('inspections?'+filters);
   for(const item of list.data||[]){const detail=await hive('inspections/'+encodeURIComponent(item.id));await enroll(detail);read++;}
   await store.setJSON('scan',{cursor:list.next_cursor||null});
+  }catch(error){if(!hiveUnavailable(error))throw error;discoveryDeferred=true;}
   }
-  let processed=0;
+  let processed=0,hiveDeferred=0;
   for await(const page of store.list({prefix:'requests/',paginate:true})){
    for(const blob of page.blobs){
     if(excludedRequest(blob.key))continue;
     const token=blob.key.slice('requests/'.length),row=await get(token);
     if(!inLaunchScope(row))continue;
     if(row.lowRatingAlert?.state!=='pending'&&(row.finishSynced&&(!row.googleReviewedAt||row.hiveTagSynced)||!row.endedAt&&now()<row.expiresAt&&dueStage(row,now())===null))continue;
-    if(processed>=20)return {read,processed};await process(token);processed++;
+    // Already-finished rows waiting only on Hive must not consume the send budget.
+    if(hivePaused&&row.endedAt&&row.finishSynced&&row.googleReviewedAt&&!row.hiveTagSynced&&row.lowRatingAlert?.state!=='pending'){hiveDeferred++;continue;}
+    if(processed>=20)return {read,processed,discoveryDeferred,hiveDeferred};
+    try{await process(token);}catch(error){if(!hiveUnavailable(error))throw error;hiveDeferred++;}
+    processed++;
    }
   }
-  return {read,processed};
+  return {read,processed,discoveryDeferred,hiveDeferred};
  }
  return {get,save,hive,mc,locked,enroll,process,feedback,confirmGoogle,run};
 }
