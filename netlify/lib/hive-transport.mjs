@@ -22,8 +22,8 @@ function validate(s){
  if(!s.reservedByDay||Array.isArray(s.reservedByDay)||typeof s.reservedByDay!=='object'||Object.entries(s.reservedByDay).some(([day,n])=>!/^\d{4}-\d{2}-\d{2}$/.test(day)||!Number.isSafeInteger(n)||n<0)||!Number.isSafeInteger(s.lastReservationAt)||s.lastReservationAt<0)fail('invalid-checkpoint');
  return s;
 }
-export function createHiveTransport({store,fetcher=fetch,now=()=>Date.now(),paused=true,apiKey,dailyBudget=100,rollingBudget=3000,providerReserve=1000,timeoutMs=10000}={}){
- if(!Number.isSafeInteger(rollingBudget)||rollingBudget<1||rollingBudget>3000||!Number.isSafeInteger(providerReserve)||providerReserve<100||providerReserve>10000||!Number.isSafeInteger(dailyBudget)||dailyBudget<1||dailyBudget>200||!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>12000)throw Error('Unsafe Hive transport budget');
+export function createHiveTransport({store,fetcher=fetch,now=()=>Date.now(),paused=true,apiKey,dailyBudget=100,rollingBudget=3000,providerReserve=1000,timeoutMs=10000,readOnly=false,requireQuota=false,verifiedProviderLimit=10000}={}){
+ if(![10000,25000].includes(verifiedProviderLimit)||!Number.isSafeInteger(rollingBudget)||rollingBudget<1||rollingBudget>3000||!Number.isSafeInteger(providerReserve)||providerReserve<100||providerReserve>10000||!Number.isSafeInteger(dailyBudget)||dailyBudget<1||dailyBudget>200||!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>12000)throw Error('Unsafe Hive transport budget');
  const fresh=t=>({version:1,day:new Date(t).toISOString().slice(0,10),attempts:0,successes:0,failures:0,notBefore:0,blocked:null,inFlight:null,quota:{},reservedByDay:{},lastReservationAt:0});
  async function mutate(fn){
   for(let attempt=0;attempt<5;attempt++){
@@ -38,6 +38,7 @@ export function createHiveTransport({store,fetcher=fetch,now=()=>Date.now(),paus
  }
  async function request(path,{method='GET',body}={}){
   if(paused!==false)fail('incident-paused');
+  if(readOnly&&method!=='GET')fail('seed-read-only');
   if(typeof apiKey!=='string'||!apiKey.trim())fail('credentials-missing');
   if(typeof path!=='string'||!path||path.startsWith('/')||path.includes('://')||path.includes('#')||!['GET','PATCH'].includes(method)||method==='GET'&&body!==undefined)throw Error('Invalid Hive request');
   const url=new URL(path,'https://api.hiveinspect.com/v1/');
@@ -75,12 +76,17 @@ export function createHiveTransport({store,fetcher=fetch,now=()=>Date.now(),paus
    else if(response.status===401||response.status===403)s.blocked='credentials-or-access';
    else if(response.status===429||response.status>=500){if(method!=='GET'&&response.status>=500)s.blocked='uncertain-write';s.failures++;s.notBefore=now()+delay(response.headers,now(),s.failures);}
    else {s.failures=0;s.notBefore=0;}
-   // Stay inside the included allowance, not the provider's 5k grace band.
-   if(!s.blocked&&(countHeader(q.Used)!==null&&countHeader(q.Used)>=9000||countHeader(q.Remaining)!==null&&countHeader(q.Remaining)<=providerReserve))s.blocked='provider-quota-reserve';
+   // Seed recovery requires coherent provider counters, never the grace band.
+   const limit=countHeader(q.Limit),used=countHeader(q.Used),remaining=countHeader(q.Remaining);
+   const validQuota=limit!==null&&limit>0&&used!==null&&remaining!==null&&used+remaining===limit;
+   if(!s.blocked&&requireQuota&&response.ok&&!validQuota)s.blocked='quota-headers-unverified';
+   const effectiveLimit=limit!==null&&limit>0?Math.min(limit,verifiedProviderLimit):10000;
+   if(!s.blocked&&(countHeader(q.Used)!==null&&countHeader(q.Used)>=effectiveLimit-providerReserve||countHeader(q.Remaining)!==null&&countHeader(q.Remaining)<=providerReserve))s.blocked='provider-quota-reserve';
    if(!s.blocked&&(q.Warning!==undefined||q.Remaining!==undefined&&/^\d+$/.test(q.Remaining)&&Number(q.Remaining)===0))s.blocked='included-quota-exhausted';
    return s;
   });
   if(error)fail('network-uncertain');
+  if(requireQuota&&final.blocked)fail(final.blocked,response.status);
   if(response.status<200||response.status>=300)fail(final.blocked||'http-'+response.status,response.status);
   return response;
  }

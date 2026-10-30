@@ -1,6 +1,6 @@
 import {beginSourceTraversal,appendSourcePage} from './hive-source-cache.mjs';
 // Shared data-plane preparation. Not wired into production while containment is on.
-export const SOURCE_PLAN=Object.freeze({enabled:false,receive:true,reviewEnrollmentEnabled:false,referralReconciliationEnabled:false,tagReconciliationEnabled:false,ledgerFencingVerified:false,automaticTagUpdatesVerified:false,contactDeletionRecoveryVerified:false,pageSize:200,hourlyMs:3600000,dailyMs:86400000,overlapMs:300000});
+export const SOURCE_PLAN=Object.freeze({enabled:false,seedOnly:true,receive:true,reviewEnrollmentEnabled:false,referralReconciliationEnabled:false,tagReconciliationEnabled:false,ledgerFencingVerified:false,automaticTagUpdatesVerified:false,contactDeletionRecoveryVerified:false,pageSize:200,hourlyMs:3600000,dailyMs:86400000,overlapMs:300000});
 const kinds=new Set(['contacts','inspections']);
 const idOK=x=>typeof x==='string'&&!['__proto__','constructor','prototype'].includes(x)&&/^[a-zA-Z0-9_-]{1,100}$/.test(x);
 const stamp=x=>{if(!Number.isSafeInteger(x)||x<0)throw Error('Invalid source time');return new Date(x).toISOString();};

@@ -12,10 +12,10 @@ export function sourceStore(context){
  const name=deployContext==='production'?'insites-hive-source':'insites-hive-source-'+(context?.deploy?.id||process.env.DEPLOY_ID||'local');
  return getStore({name,consistency:'strong'});
 }
-export function sourceTransport(context){
- return createHiveTransport({store:sourceStore(context),apiKey:process.env.HIVE_API_KEY,paused:HIVE_INCIDENT.paused||!SOURCE_PLAN.enabled,dailyBudget:100,rollingBudget:3000,timeoutMs:8000});
+export function sourceTransport(context,{seedOnly=false}={}){
+ return createHiveTransport({store:sourceStore(context),apiKey:process.env.HIVE_API_KEY,paused:seedOnly?false:HIVE_INCIDENT.paused||!SOURCE_PLAN.enabled,readOnly:seedOnly,requireQuota:seedOnly,verifiedProviderLimit:seedOnly?25000:10000,dailyBudget:100,rollingBudget:3000,timeoutMs:8000});
 }
-export function sourceServices(context){
+export function sourceServices(context,{seedOnly=false}={}){
  const store=sourceStore(context),cache=createSourceCache({store});
  let barriersPromise;
  const barriers=()=>barriersPromise||=(async()=>{
@@ -34,5 +34,5 @@ export function sourceServices(context){
   return {contacts,inspections,global};
  })();
  const view=createSourceView({cache,invalidatedIds:async()=>{const state=await barriers();if(state.global)throw new HiveSourceDeferred('Contact role authority awaits reconciliation');return state.contacts;},invalidatedInspectionIds:async()=>(await barriers()).inspections});
- return {store,cache,view,transport:sourceTransport(context),withLease:createHiveSourceLease({store}).withLease};
+ return {store,cache,view,transport:sourceTransport(context,{seedOnly}),withLease:createHiveSourceLease({store}).withLease};
 }
