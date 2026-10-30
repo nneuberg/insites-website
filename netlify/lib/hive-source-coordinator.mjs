@@ -40,7 +40,9 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
   cache={...cache,apply:async(...args)=>{await lease.assertHeld();return originalCache.apply(...args)},publishTraversal:async(...args)=>{await lease.assertHeld();return originalCache.publishTraversal(...args)}};
   let state=(await store.getWithMetadata(SOURCE_COORDINATOR_KEY,{type:'json'}))?.data||{schema:1,active:null,hourlyAt:0,tagsAt:0,pendingAt:0,fullRolesAt:0,contactsAt:0,contactsOffset:0,pendingOffset:0};
   if(state.schema!==1)throw Error('Invalid coordinator state');
-  if(state.resumeAfter>now())return {deferred:true,reason:'source-page-backoff',requests:0};
+  // Invalid source pages require reconciliation, never an automatic full rescan.
+  // Legacy backoff checkpoints already discarded their traversal; hold those too.
+  if(state.quarantined||state.resumeAfter)return {deferred:true,reason:'source-page-quarantined',requests:0};
   // Do not mutate cache midway through a paginated generation. New webhook
   // messages remain durably pending and are handled on the next idle tick.
   if(!state.active)await runHiveSourceEventWorker({store,cache,enabled:true,now,withLease:async(name,fn)=>{if(name!==SOURCE_COORDINATOR_LEASE)throw Error('Wrong lease');return fn(lease);}});
@@ -70,7 +72,7 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
   if(!task.traversal.done){
    const t=task.traversal,params={...task.params,cursor:t.nextCursor,...(task.purpose==='delta'?{since:t.since}:{})};
    try{const response=await transport.request(sourceListPath(task.kind,params));requests=1;const page=await response.json();task.traversal=appendSourcePage(t,{cursor:t.nextCursor,rows:page.data.map(r=>normalizeListRecord(task.kind,r)),nextCursor:page.next_cursor,total:page.total});await save(store,SOURCE_COORDINATOR_KEY,state);}
-   catch(error){if(error.code==='HIVE_TRANSPORT_DEFERRED')return deferred(error);if(requests===1){state.active=null;state.resumeAfter=now()+HOUR;await save(store,SOURCE_COORDINATOR_KEY,state);return {deferred:true,reason:'source-page-invalid',requests:1};}throw error;}
+   catch(error){if(error.code==='HIVE_TRANSPORT_DEFERRED')return deferred(error);if(requests===1){const safeReasons=['Incomplete or inconsistent pagination','Duplicate or wrong source identities','Pagination cycle','Incomplete coverage','Incomplete source record','Incomplete contact authority','Incomplete contact tags or roles','Missing source revision','Invalid source calendar time','Invalid source revision'];state.quarantined=true;state.validationFailure={at:now(),kind:task.kind,purpose:task.purpose,pages:task.traversal.pages,rows:task.traversal.rows.length,total:task.traversal.total,reason:safeReasons.includes(error.message)?error.message:'source-page-invalid'};await save(store,SOURCE_COORDINATOR_KEY,state);return {deferred:true,reason:'source-page-quarantined',requests:1,validation:state.validationFailure};}throw error;}
   }
   const t=task.traversal;if(!t.done)return {requests,task:task.purpose,complete:false};
   const all=t.scope==='all',current=await cache.read();
