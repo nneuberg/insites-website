@@ -40,6 +40,12 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
   cache={...cache,apply:async(...args)=>{await lease.assertHeld();return originalCache.apply(...args)},publishTraversal:async(...args)=>{await lease.assertHeld();return originalCache.publishTraversal(...args)}};
   let state=(await store.getWithMetadata(SOURCE_COORDINATOR_KEY,{type:'json'}))?.data||{schema:1,active:null,hourlyAt:0,tagsAt:0,pendingAt:0,fullRolesAt:0,contactsAt:0,contactsOffset:0,pendingOffset:0};
   if(state.schema!==1)throw Error('Invalid coordinator state');
+  // One authorized observable recovery of the inspected legacy invalid-page checkpoint.
+  // Preserve transport budgets; never release another failure or repeat this recovery.
+  if(state.active===null&&state.resumeAfter===1793402413724&&!state.quarantined&&!state.diagnosticRecovery){
+   state.resumeAfter=0;state.diagnosticRecovery='contact-baseline-20261030';
+   await save(store,SOURCE_COORDINATOR_KEY,state);
+  }
   // Invalid source pages require reconciliation, never an automatic full rescan.
   // Legacy backoff checkpoints already discarded their traversal; hold those too.
   if(state.quarantined||state.resumeAfter)return {deferred:true,reason:'source-page-quarantined',requests:0};
@@ -70,9 +76,9 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
   }
   const task=state.active;let requests=0;
   if(!task.traversal.done){
-   const t=task.traversal,params={...task.params,cursor:t.nextCursor,...(task.purpose==='delta'?{since:t.since}:{})};
-   try{const response=await transport.request(sourceListPath(task.kind,params));requests=1;const page=await response.json();task.traversal=appendSourcePage(t,{cursor:t.nextCursor,rows:page.data.map(r=>normalizeListRecord(task.kind,r)),nextCursor:page.next_cursor,total:page.total});await save(store,SOURCE_COORDINATOR_KEY,state);}
-   catch(error){if(error.code==='HIVE_TRANSPORT_DEFERRED')return deferred(error);if(requests===1){const safeReasons=['Incomplete or inconsistent pagination','Duplicate or wrong source identities','Pagination cycle','Incomplete coverage','Incomplete source record','Incomplete contact authority','Incomplete contact tags or roles','Missing source revision','Invalid source calendar time','Invalid source revision'];state.quarantined=true;state.validationFailure={at:now(),kind:task.kind,purpose:task.purpose,pages:task.traversal.pages,rows:task.traversal.rows.length,total:task.traversal.total,reason:safeReasons.includes(error.message)?error.message:'source-page-invalid'};await save(store,SOURCE_COORDINATOR_KEY,state);return {deferred:true,reason:'source-page-quarantined',requests:1,validation:state.validationFailure};}throw error;}
+   let pageSummary=null;const t=task.traversal,params={...task.params,cursor:t.nextCursor,...(task.purpose==='delta'?{since:t.since}:{})};
+   try{const response=await transport.request(sourceListPath(task.kind,params));requests=1;const page=await response.json();pageSummary={rows:Array.isArray(page?.data)?page.data.length:null,total:Number.isSafeInteger(page?.total)?page.total:null,cursorKind:page?.next_cursor===null?'null':typeof page?.next_cursor};task.traversal=appendSourcePage(t,{cursor:t.nextCursor,rows:page.data.map(r=>normalizeListRecord(task.kind,r)),nextCursor:page.next_cursor,total:page.total});await save(store,SOURCE_COORDINATOR_KEY,state);}
+   catch(error){if(error.code==='HIVE_TRANSPORT_DEFERRED')return deferred(error);if(requests===1){const safeReasons=['Incomplete or inconsistent pagination','Duplicate or wrong source identities','Pagination cycle','Incomplete coverage','Incomplete source record','Incomplete contact authority','Incomplete contact tags or roles','Missing source revision','Invalid source calendar time','Invalid source revision','Invalid normalized source record','Invalid normalized email identities'];state.quarantined=true;state.validationFailure={at:now(),kind:task.kind,purpose:task.purpose,page:pageSummary,pages:task.traversal.pages,rows:task.traversal.rows.length,total:task.traversal.total,reason:safeReasons.includes(error.message)?error.message:'source-page-invalid'};await save(store,SOURCE_COORDINATOR_KEY,state);return {deferred:true,reason:'source-page-quarantined',requests:1,validation:state.validationFailure};}throw error;}
   }
   const t=task.traversal;if(!t.done)return {requests,task:task.purpose,complete:false};
   const all=t.scope==='all',current=await cache.read();
