@@ -7,7 +7,7 @@ const fail=reason=>{throw new HiveSourceLeaseError(reason);};
 // Read-scan coordination only: an expired lease may be reclaimed. Never use this
 // to decide whether an uncertain external write can be retried.
 export function createHiveSourceLease({store,now=()=>Date.now(),leaseMs=30000,workMs=10000}={}){
- if(!Number.isSafeInteger(workMs)||workMs<1||workMs>10000||!Number.isSafeInteger(leaseMs)||leaseMs<workMs+1000||leaseMs>120000)throw Error('Invalid source lease duration');
+ if(!Number.isSafeInteger(workMs)||workMs<1||workMs>25000||!Number.isSafeInteger(leaseMs)||leaseMs<workMs+1000||leaseMs>120000)throw Error('Invalid source lease duration');
  async function withLease(name,fn){
   if(typeof name!=='string'||!name.trim()||typeof fn!=='function')throw Error('Invalid source lease');
   const key='hive-source/leases/'+createHash('sha256').update(name).digest('hex'),owner=randomUUID(),started=now();

@@ -13,7 +13,7 @@ export function sourceStore(context){
  return getStore({name,consistency:'strong'});
 }
 export function sourceTransport(context,{seedOnly=false}={}){
- return createHiveTransport({store:sourceStore(context),apiKey:process.env.HIVE_API_KEY,paused:seedOnly?false:HIVE_INCIDENT.paused||!SOURCE_PLAN.enabled,readOnly:seedOnly,requireQuota:seedOnly,verifiedProviderLimit:seedOnly?25000:10000,dailyBudget:100,rollingBudget:3000,timeoutMs:8000});
+ return createHiveTransport({store:sourceStore(context),apiKey:process.env.HIVE_API_KEY,paused:seedOnly?false:HIVE_INCIDENT.paused||!SOURCE_PLAN.enabled,readOnly:seedOnly,requireQuota:seedOnly,verifiedProviderLimit:seedOnly?25000:10000,dailyBudget:100,rollingBudget:3000,timeoutMs:seedOnly?12000:8000});
 }
 export function sourceServices(context,{seedOnly=false}={}){
  const store=sourceStore(context),cache=createSourceCache({store});
@@ -34,5 +34,24 @@ export function sourceServices(context,{seedOnly=false}={}){
   return {contacts,inspections,global};
  })();
  const view=createSourceView({cache,invalidatedIds:async()=>{const state=await barriers();if(state.global)throw new HiveSourceDeferred('Contact role authority awaits reconciliation');return state.contacts;},invalidatedInspectionIds:async()=>(await barriers()).inspections});
- return {store,cache,view,transport:sourceTransport(context,{seedOnly}),withLease:createHiveSourceLease({store}).withLease};
+ return {store,cache,view,transport:sourceTransport(context,{seedOnly}),withLease:seedOnly?reconciledSeedLease(store):createHiveSourceLease({store}).withLease};
+}
+
+// One-time recovery of the operator-inspected, expired GET-only seed timeout.
+// Keep all transport counters, cursors, cache and event receipts unchanged.
+function reconciledSeedLease(store){
+ const withLease=createHiveSourceLease({store,leaseMs:45000,workMs:25000}).withLease;
+ return async(name,fn)=>{
+  if(name!=='hive-source-coordinator')throw Error('Invalid seed lease');
+  const key='hive-source/leases/1366a259b055c189e7ef12b148fe5d6f486384d7eeb810214e2d4fd9c9f2e5b1';
+  const prior=await store.getWithMetadata(key,{type:'json'}),l=prior?.data;
+  if(l?.quarantined&&l.fence===1&&l.acquiredAt===1793393413666&&l.until===1793393443666){
+   const t=await store.get('hive-source/transport-v1',{type:'json'});
+   const c=await store.get('hive-source-coordinator/v1',{type:'json'});
+   const a=c?.active;
+   if(Date.now()<l.until+60000||t?.inFlight!==null||t.blocked!==null||t.attempts!==1||t.successes!==0||t.failures!==1||t.lastReservationAt!==1793393423626||Object.values(t.reservedByDay||{}).reduce((s,n)=>s+n,0)!==1||a?.kind!=='contacts'||a.purpose!=='baseline'||a.traversal?.pages!==0||a.traversal?.nextCursor!==null||a.traversal?.rows?.length!==0)throw Error('Seed recovery requires reconciliation');
+   if(!prior.etag||(await store.setJSON(key,{...l,until:0,quarantined:false,reconciled:'get-only-seed-timeout-20261030'},{onlyIfMatch:prior.etag}))?.modified!==true)throw Error('Seed recovery conflict');
+  }
+  return withLease(name,fn);
+ };
 }
