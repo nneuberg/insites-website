@@ -29,7 +29,7 @@ function terminalInspection(row,at){
 function contactIds(record){if(!Array.isArray(record?.contacts)||record.contacts.some(c=>typeof c?.id!=='string'))return null;return record.contacts.map(c=>c.id);}
 // One lease and at most ONE provider request per tick. No send/eligibility action.
 // All callers must share company-scoped strong-consistency storage and transport.
-export async function runHiveSourceCoordinator({store,cache,transport,withLease,enabled=false,now=()=>Date.now(),historyComplete=false,contactDeletionRecoveryVerified=false}={}){
+export async function runHiveSourceCoordinator({store,cache,transport,withLease,enabled=false,repairGeneration=false,now=()=>Date.now(),historyComplete=false,contactDeletionRecoveryVerified=false}={}){
  if(enabled!==true)return {deferred:true,requests:0};
  if(typeof withLease!=='function'||typeof transport?.request!=='function')throw Error('Shared lease and quota transport required');
  return withLease(SOURCE_COORDINATOR_LEASE,async(lease)=>{
@@ -40,10 +40,15 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
   cache={...cache,apply:async(...args)=>{await lease.assertHeld();return originalCache.apply(...args)},publishTraversal:async(...args)=>{await lease.assertHeld();return originalCache.publishTraversal(...args)}};
   let state=(await store.getWithMetadata(SOURCE_COORDINATOR_KEY,{type:'json'}))?.data||{schema:1,active:null,hourlyAt:0,tagsAt:0,pendingAt:0,fullRolesAt:0,contactsAt:0,contactsOffset:0,pendingOffset:0};
   if(state.schema!==1)throw Error('Invalid coordinator state');
-  // One authorized observable recovery of the inspected legacy invalid-page checkpoint.
-  // Preserve transport budgets; never release another failure or repeat this recovery.
-  if(state.active===null&&state.resumeAfter===1793402413724&&!state.quarantined&&!state.diagnosticRecovery){
-   state.resumeAfter=0;state.diagnosticRecovery='contact-baseline-20261030';
+  // A separate private generation prevents silent same-revision repair overrides.
+  // Archive, never promote, the inspected pre-repair traversal. Budgets/receipts stay untouched.
+  if(repairGeneration&&state.generation!=='post-repair-20261031'){
+   const t=state.active?.traversal,f=state.validationFailure;
+   if(!state.quarantined||state.diagnosticRecovery!=='contact-baseline-20261030'||state.active?.kind!=='contacts'||state.active.purpose!=='baseline'||t?.pages!==13||t.rows.length!==2600||t.total!==2737||!t.nextCursor||f?.at!==1793403311370||f.reason!=='Invalid normalized email identities')throw Error('Post-repair generation requires reconciliation');
+   const archiveKey='hive-source-coordinator/archive-pre-repair-20261031';
+   const archived=await store.setJSON(archiveKey,state,{onlyIfNew:true});
+   if(archived?.modified!==true){const existing=await store.get(archiveKey,{type:'json'});if(!same(existing,state))throw Error('Pre-repair archive conflict');}
+   state={schema:1,generation:'post-repair-20261031',active:null,hourlyAt:0,tagsAt:0,pendingAt:0,fullRolesAt:0,contactsAt:0,contactsOffset:0,pendingOffset:0};
    await save(store,SOURCE_COORDINATOR_KEY,state);
   }
   // Invalid source pages require reconciliation, never an automatic full rescan.
@@ -51,9 +56,10 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
   if(state.quarantined||state.resumeAfter)return {deferred:true,reason:'source-page-quarantined',requests:0};
   // Do not mutate cache midway through a paginated generation. New webhook
   // messages remain durably pending and are handled on the next idle tick.
-  if(!state.active)await runHiveSourceEventWorker({store,cache,enabled:true,now,withLease:async(name,fn)=>{if(name!==SOURCE_COORDINATOR_LEASE)throw Error('Wrong lease');return fn(lease);}});
-  let work=(await store.getWithMetadata(SOURCE_WORK_KEY,{type:'json'}))?.data||workEmpty();
+  if(!state.active&&!repairGeneration)await runHiveSourceEventWorker({store,cache,enabled:true,now,withLease:async(name,fn)=>{if(name!==SOURCE_COORDINATOR_LEASE)throw Error('Wrong lease');return fn(lease);}});
+  let work=repairGeneration?workEmpty():(await store.getWithMetadata(SOURCE_WORK_KEY,{type:'json'}))?.data||workEmpty();
   const snap=await cache.read();
+  if(repairGeneration&&snap.state.coverage.contacts?.complete&&snap.state.coverage.inspections?.complete)return {requests:0,generation:state.generation,baselinesComplete:true,consumerPromotion:false};
   async function start(kind,purpose,params={},scope='selective'){
    const mode=purpose==='delta'?'delta':'full';
    state.active={kind,purpose,params,snapshot:snap,traversal:beginSourceTraversal(snap.state,{kind,mode,startedAt:now(),scope,historyComplete:kind==='inspections'&&scope==='all'&&historyComplete,overlapMs:SOURCE_PLAN.overlapMs})};
@@ -87,6 +93,7 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
   if(all){if(!same(current.state,finishSourceTraversal(t)))await cache.publishTraversal(task.snapshot,t);}
   else {const applied=await cache.apply(t.rows);if(applied?.schema!==1)throw Error('Cache publication unacknowledged');}
   const published=(await cache.read()).state;
+  if(repairGeneration){state.active=null;await save(store,SOURCE_COORDINATOR_KEY,state);return {requests,task:task.purpose,complete:true,generation:state.generation,consumerPromotion:false};}
   work=await updateWork(store,w=>{
    const changes=task.kind==='contacts'?'changedContacts':'changedInspections';w[changes]||={};
    for(const row of t.rows){const before=task.snapshot.state[task.kind][row.id];if(!before||before.revision!==row.revision||before.deleted!==row.deleted)w[changes][row.id]=Math.max(w[changes][row.id]||0,row.revision);}

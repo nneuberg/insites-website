@@ -35,11 +35,14 @@ export function normalizeListRecord(kind,row){
  const deleted=row.deleted===true;
  // Do not synthesize complete contact roles/tags from embedded inspection contacts.
  if(kind==='contacts'&&(!Array.isArray(row.roles)||!Array.isArray(row.tags)))throw Error('Incomplete contact authority');
- const emails=kind==='contacts'&&row.email?[row.email]:[];
+ const sourceEmail=kind==='contacts'&&typeof row.email==='string'?row.email.trim().toLowerCase():null;
+ const usableEmail=sourceEmail&&/^\S+@\S+\.\S+$/.test(sourceEmail)?sourceEmail:null;
+ const invalidEmail=kind==='contacts'&&row.email!=null&&row.email!==''&&!usableEmail;
+ const emails=kind==='contacts'&&usableEmail?[usableEmail]:[];
  let data=structuredClone(row);
  if(kind==='contacts'){
   if(row.roles.some(r=>typeof r!=='string')||row.tags.some(t=>typeof t?.name!=='string'||!t.name.trim()))throw Error('Incomplete contact tags or roles');
-  data={id:row.id,first_name:row.first_name??null,last_name:row.last_name??null,email:row.email?.trim().toLowerCase()||null,
+  data={id:row.id,first_name:row.first_name??null,last_name:row.last_name??null,email:usableEmail,...(invalidEmail?{sourceEmail:row.email,emailIdentityHeld:true}:{}),
    roles:[...new Set(row.roles)].sort(),tags:[...new Set(row.tags.map(t=>t.name))].sort().map(name=>({name}))};
  }
  return {kind,id:row.id,revision:sourceRevision(deleted?row.deleted_at:row.updated_at),deleted,data,...(kind==='contacts'?{emails}:{})};
