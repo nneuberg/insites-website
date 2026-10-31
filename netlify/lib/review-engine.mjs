@@ -8,10 +8,11 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  const projectionPaused=env.REVIEW_PROJECTION_PAUSED==='true';
  const hash=s=>createHash('sha256').update(s).digest('hex');
  const rowKey=t=>'requests/'+t;
- async function api(url,options={}){
+ async function api(url,options={},allowUnverifiedBody=false){
   const r=await fetcher(url,{...options,signal:AbortSignal.timeout(12000)});
   if(!r.ok){const e=new Error('API request failed');e.status=r.status;throw e;}
-  return r.status===204?null:r.json();
+  if(r.status===204)return null;
+  try{return await r.json();}catch(error){if(allowUnverifiedBody)return null;throw error;}
  }
  async function hive(path,body){
   if(hivePaused)throw new HiveUnavailable();
@@ -21,12 +22,23 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   catch(error){throw new HiveUnavailable(error.status||503);}
  }
  async function mc(row,body,method='PATCH',suffix=''){
+  if(body?.merge_fields&&row.projectionHold)throw Error('Mailchimp projection held for reconciliation');
   const dc=env.MAILCHIMP_API_KEY?.split('-').at(-1);if(!/^us\d+$/.test(dc||''))throw Error('Mailchimp not configured');
   const id=createHash('md5').update(row.email).digest('hex');
-  return api(`https://${dc}.api.mailchimp.com/3.0/lists/${AUDIENCES[row.role]}/members/${id}${suffix}`,{method,headers:{Authorization:'Basic '+Buffer.from('insites:'+env.MAILCHIMP_API_KEY).toString('base64'),'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});
+  const url=`https://${dc}.api.mailchimp.com/3.0/lists/${AUDIENCES[row.role]}/members/${id}${suffix}`,headers={Authorization:'Basic '+Buffer.from('insites:'+env.MAILCHIMP_API_KEY).toString('base64'),'Content-Type':'application/json'};
+  let result=await api(url,{method,headers,...(body===undefined?{}:{body:JSON.stringify(body)})},!!body?.merge_fields);
+  if(body?.merge_fields){
+   const matches=m=>!!m?.merge_fields&&Object.entries(body.merge_fields).every(([k,v])=>Object.hasOwn(m.merge_fields,k)&&m.merge_fields[k]===v);
+   if(!matches(result)){
+    try{result=await api(url,{method:'GET',headers});}catch{result=null;}
+    if(!matches(result)){row.projectionHold={reason:'mailchimp-projection-unverified',at:now(),fields:Object.keys(body.merge_fields)};await save(row);throw Error('Mailchimp projection unverified; held for reconciliation');}
+   }
+  }
+  return result;
  }
  const get=t=>store.get(rowKey(t),{type:'json'});
  const save=row=>store.setJSON(rowKey(row.token),row);
+ const needsLegacyHold=row=>!row.cadenceVersion&&!row.deliveryHold&&!row.projectionHold&&!row.endedAt&&!row.isTest&&now()<row.expiresAt&&[[0],[0,1]].some(s=>JSON.stringify(s)===JSON.stringify(row.sentStages));
  async function locked(key,fn){
   const owner=randomBytes(16).toString('hex'),lockKey='locks/'+hash(key),old=await store.getWithMetadata(lockKey,{type:'json'});
   if(old?.data.until>now())throw Error('Request busy; retry later');
@@ -83,6 +95,9 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   const member=await mc(row,undefined,'GET');
   if(member.merge_fields?.RVGDONE==='YES'||member.tags?.some(t=>t.name==='google reviewed')){row.googleReviewedAt=now();row.endedAt=now();await save(row);await finish(row);return;}
   if(member.status!=='subscribed'){row.endedAt=now();row.suppressed=true;row.finishSynced=true;await save(row);return;}
+  // One audience per person: native recent-send predicates are audience-local.
+  let other;try{other=await mc({...row,role:row.role==='Agent'?'Customer':'Agent'},undefined,'GET');}catch(error){if(error.status!==404)throw error;}
+  if(other?.status==='subscribed'){row.deliveryHold={reason:'cross-audience-subscribed',at:now()};await save(row);return;}
   if(!member.merge_fields||!['RVPEND','RVFEED','RVGDONE'].every(k=>Object.hasOwn(member.merge_fields,k)))throw Error('Review field schema unavailable');
   if(!['','YES'].includes(member.merge_fields.RVFEED)||!['','YES'].includes(member.merge_fields.RVGDONE))throw Error('Unknown review terminal state');
   if(member.merge_fields.RVFEED==='YES'){row.endedAt=now();await save(row);await finish(row);return;}
@@ -90,7 +105,8 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   const stageValue='STAGE'+stage,pending=member.merge_fields.RVPEND===stageValue;
   // Existing policy is ONE sequence per person. Monotonic stage values replace
   // remove/re-add tag toggles. This acknowledges projection, not email delivery.
-  if(row.preparingStage===stage&&row.stagePrepared&&pending){row.sentStages=[...new Set([...row.sentStages,...Array.from({length:stage+1},(_,n)=>n)])];delete row.preparingStage;delete row.stagePrepared;await save(row);return;}
+  if(row.preparingStage===stage&&row.stagePrepared&&pending){row.lastStageQueuedAt=now();row.sentStages=[...new Set([...row.sentStages,...Array.from({length:stage+1},(_,n)=>n)])];delete row.preparingStage;delete row.stagePrepared;await save(row);return;}
+  if(row.stagePrepared&&row.preparingStage!==undefined){row.projectionHold={reason:'mailchimp-stage-outcome-uncertain',at:now(),stage:row.preparingStage};await save(row);throw Error('Mailchimp stage outcome uncertain; held for reconciliation');}
   if(pending||member.merge_fields.RVPEND==='ENDED'||/^STAGE[0-2]$/.test(member.merge_fields.RVPEND)&&Number(member.merge_fields.RVPEND.slice(-1))>=stage)throw Error('Review stage requires reconciliation');
   if(member.merge_fields.RVPEND!==''&&!/^STAGE[0-2]$/.test(member.merge_fields.RVPEND))throw Error('Unknown review stage');
   row.preparingStage=stage;row.stagePrepared=false;await save(row);
@@ -98,6 +114,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   await mc(row,{merge_fields:{REVLINK:ORIGIN+'/review/r/'+row.token,REVADDR:row.address}});
   row.stagePrepared=true;await save(row);
   await mc(row,{merge_fields:{RVPEND:stageValue}});
+  row.lastStageQueuedAt=now();
   row.sentStages=[...new Set([...row.sentStages,...Array.from({length:stage+1},(_,n)=>n)])];delete row.preparingStage;delete row.stagePrepared;await save(row);
  }
  async function enroll(inspection){
@@ -135,7 +152,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
     // One review sequence per person, including repeat inspections.
     if(prior)return;
     const token=index?.token||randomBytes(24).toString('hex');
-    const row={...person,inspectionEndedAt:person.endedAt,endedAt:null,token,createdAt:now(),expiresAt:now()+14*DAY,sentStages:[]};
+    const row={...person,inspectionEndedAt:person.endedAt,endedAt:null,token,createdAt:now(),expiresAt:now()+21*DAY,sentStages:[],cadenceVersion:'weekly-v1'};
     delete row.endedAt;
     try{const member=await mc(row,undefined,'GET');if(member.status!=='subscribed'||member.merge_fields?.RVGDONE==='YES'||member.tags?.some(t=>t.name==='google reviewed'))return;}catch(e){if(e.status===404)return;throw e;}
     // Index and row creation happen under a per-person lock; indexes recover from a crash between writes.
@@ -151,8 +168,14 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
    const row=await get(token);
    if(row.isTest||!inLaunchScope(row))return;
    await deliverLowRating(row,{env,fetcher,save,now});
+   if(row.projectionHold)return;
    if(row.endedAt){if(!row.finishSynced&&!row.suppressed)await finish(row);if(row.googleReviewedAt&&!row.hiveTagSynced)await syncHiveTag(row);return;}
    if(now()>=row.expiresAt){row.endedAt=row.expiresAt;await save(row);await finish(row);return;}
+   // A policy hold is not a fabricated delivery/queue receipt. Existing stage
+   // indices and original expiry remain untouched; no historical field replay.
+   if(needsLegacyHold(row)){
+    row.cadenceVersion='weekly-v1';row.legacyMigrationVersion='review-fields-v1';row.legacyNotBefore=now()+7*DAY;await save(row);return;
+   }
    const stage=dueStage(row,now());if(stage!==null&&stage>=0)await send(row,stage);
   });
  }
@@ -197,7 +220,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
     if(excludedRequest(blob.key))continue;
     const token=blob.key.slice('requests/'.length),row=await get(token);
     if(!inLaunchScope(row))continue;
-    if(row.lowRatingAlert?.state!=='pending'&&(row.finishSynced&&(!row.googleReviewedAt||row.hiveTagSynced)||!row.endedAt&&now()<row.expiresAt&&dueStage(row,now())===null))continue;
+    if(!needsLegacyHold(row)&&row.lowRatingAlert?.state!=='pending'&&(row.finishSynced&&(!row.googleReviewedAt||row.hiveTagSynced)||!row.endedAt&&now()<row.expiresAt&&dueStage(row,now())===null))continue;
     // Already-finished rows waiting only on Hive must not consume the send budget.
     if(hivePaused&&row.endedAt&&row.finishSynced&&row.googleReviewedAt&&!row.hiveTagSynced&&row.lowRatingAlert?.state!=='pending'){hiveDeferred++;continue;}
     if(processed>=20)return {read,processed,discoveryDeferred,hiveDeferred};

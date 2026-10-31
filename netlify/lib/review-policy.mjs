@@ -1,5 +1,5 @@
 export const DAY=86400000;
-export const REMINDER_DAYS=[0,3,7];
+export const REMINDER_DAYS=[0,7,14];
 export const ORIGIN='https://www.insites.services';
 export const GOOGLE_REVIEW='https://g.page/r/Cdo4F8EN0UmwEAE/review';
 export const AUDIENCES={Customer:'8f8749ba24',Agent:'3ebb3017d4'};
@@ -26,7 +26,25 @@ export function referralDates(endedAt){
  return {REVREF2:fmt(invite),REVREF6:fmt(six)};
 }
 export function dueStage(row,now){
+ // Historical tag-stage records have no reliable field-enrollment timestamps.
+ // Never replay them or guess timing during a projection migration.
+ if(row.cadenceVersion!=='weekly-v1'||row.deliveryHold)return null;
+ if(row.legacyNotBefore!==undefined&&(!Number.isSafeInteger(row.legacyNotBefore)||now<row.legacyNotBefore))return null;
+ if((row.sentStages||[]).length){
+  // One worker interval beyond 168h avoids the usual after-exit re-entry race;
+  // this latency margin is not proof of Mailchimp exit or email delivery.
+  if(row.lastStageQueuedAt!==undefined){if(!Number.isSafeInteger(row.lastStageQueuedAt)||now<row.lastStageQueuedAt||now-row.lastStageQueuedAt<7*DAY+15*60*1000)return null;}
+  else if(row.legacyMigrationVersion!=='review-fields-v1'||!Number.isSafeInteger(row.legacyNotBefore))return null;
+ }
  if(row.ratedAt||row.googleReviewedAt||row.endedAt||now>=row.expiresAt)return null;
+ // Reconcile the exact in-flight signal before considering a later stage.
+ if(row.preparingStage!==undefined)return Number.isInteger(row.preparingStage)&&row.preparingStage>=0&&row.preparingStage<=2?row.preparingStage:null;
+ // Preserve legacy calendar eligibility, not its former send cadence. The
+ // explicit cutover hold and dated handoff cooldown above still require 7 days.
+ if(row.legacyMigrationVersion==='review-fields-v1'){
+  const legacyDays=[0,3,7],next=legacyDays.findIndex((_,index)=>!(row.sentStages||[]).includes(index));
+  return next>=0&&now>=row.createdAt+legacyDays[next]*DAY?next:null;
+ }
  // After an outage send only the latest due request, not several catch-up emails.
  for(let index=REMINDER_DAYS.length-1;index>=0;index--)if(now>=row.createdAt+REMINDER_DAYS[index]*DAY&&!(row.sentStages||[]).includes(index))return index;
  return null;

@@ -1,0 +1,30 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {DAY,dueStage,REMINDER_DAYS} from '../netlify/lib/review-policy.mjs';
+import {setup,inspection} from './review-fields-cutover-harness.mjs';
+test('weekly review stage admission holds legacy timing, uses confirmed handoff cooldown and blocks subscribed cross-audience identity',async()=>{
+ const t=Date.parse('2026-10-31T00:00:00Z');
+ const row={createdAt:t,expiresAt:t+21*DAY,sentStages:[],cadenceVersion:'weekly-v1'};
+ assert.deepEqual(REMINDER_DAYS,[0,7,14]);assert.equal(dueStage(row,t),0);
+ row.sentStages=[0];row.lastStageQueuedAt=t+DAY;
+ assert.equal(dueStage(row,t+7*DAY),null);assert.equal(dueStage(row,t+8*DAY),null);assert.equal(dueStage(row,t+8*DAY+15*60*1000),1);
+ row.sentStages=[0,1];row.lastStageQueuedAt=t+8*DAY;
+ assert.equal(dueStage(row,t+14*DAY),null);assert.equal(dueStage(row,t+15*DAY),null);assert.equal(dueStage(row,t+15*DAY+15*60*1000),2);
+ assert.equal(dueStage({...row,cadenceVersion:undefined},t+16*DAY),null);
+ assert.equal(dueStage({...row,lastStageQueuedAt:undefined},t+16*DAY),null);
+ assert.equal(dueStage({...row,deliveryHold:{reason:'uncertain'}},t+16*DAY),null);
+ const s=setup({otherAudienceSubscribed:true});await s.engine.enroll(inspection);const key=[...s.entries.keys()].find(k=>k.startsWith('requests/'));const r=await s.engine.get(key.slice(9));
+ assert.equal(r.expiresAt-r.createdAt,21*DAY);assert.equal(r.cadenceVersion,'weekly-v1');
+ // Fixture returns subscribed members in BOTH audiences; this must hold, not send.
+ await s.engine.process(r.token);assert.equal((await s.engine.get(r.token)).deliveryHold.reason,'cross-audience-subscribed');
+ assert.equal(s.calls.some(c=>c.body?.merge_fields?.RVPEND),false);
+ const legacy=setup();await legacy.engine.enroll(inspection);const legacyKey=[...legacy.entries.keys()].find(k=>k.startsWith('requests/'));const old=await legacy.store.get(legacyKey);delete old.cadenceVersion;old.sentStages=[0,1];old.expiresAt=old.createdAt+14*DAY;await legacy.store.setJSON(legacyKey,old);legacy.calls.length=0;
+ await legacy.engine.run({discover:false});const migrated=await legacy.store.get(legacyKey);
+ assert.deepEqual(migrated.sentStages,[0,1]);assert.equal(migrated.expiresAt,old.expiresAt);
+ assert.equal(migrated.legacyNotBefore,old.createdAt+7*DAY);assert.equal(migrated.lastStageQueuedAt,undefined);
+ assert.equal(migrated.legacyMigrationVersion,'review-fields-v1');assert.equal(legacy.calls.length,0);
+ assert.equal(dueStage(migrated,migrated.legacyNotBefore-1),null);
+ assert.equal(dueStage(migrated,migrated.legacyNotBefore),2);
+ assert.equal(dueStage({...migrated,sentStages:[0]},migrated.legacyNotBefore),1);
+ assert.equal(dueStage({...migrated,lastStageQueuedAt:migrated.legacyNotBefore},migrated.legacyNotBefore+DAY),null);
+ assert.equal(dueStage(migrated,migrated.expiresAt),null);
+});

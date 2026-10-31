@@ -56,7 +56,7 @@ export async function syncOwner(owner,{request,now=new Date(),member}={}){
  return {status:changed?'synced':'unchanged'};
 }
 export async function syncReferrals({env=process.env,callLedger=()=>ledger('codeSnapshot',{},env,7000),request,now=new Date()}={}){
- if(MAILCHIMP_STATE_MIGRATION.paused||env.REFERRAL_MAILCHIMP_ENABLED!=='true'||(!request&&!env.MAILCHIMP_API_KEY))return {enabled:false};
+ if(MAILCHIMP_STATE_MIGRATION.paused||MAILCHIMP_STATE_MIGRATION.referralPaused||env.REFERRAL_MAILCHIMP_ENABLED!=='true'||(!request&&!env.MAILCHIMP_API_KEY))return {enabled:false};
  const api=request||mailchimpClient(env),owners=referralOwners(await callLedger());
  const result={enabled:true,synced:0,unchanged:0,suppressed:0,review:0,capacity:0,failed:0};
  if(!owners.length)return result;

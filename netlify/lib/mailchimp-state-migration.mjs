@@ -1,3 +1,3 @@
-// Explicit cutover hold. Preserve queues and history; do not resume writers until
-// both audience field schemas, historical projections and flow triggers verify.
-export const MAILCHIMP_STATE_MIGRATION=Object.freeze({paused:true,version:'review-fields-v1'});
+// Review projection resumes after the field/tag cutover; source discovery and
+// referral activation retain their separate holds. Never replay legacy stages.
+export const MAILCHIMP_STATE_MIGRATION=Object.freeze({paused:false,referralPaused:true,version:'review-fields-v1'});

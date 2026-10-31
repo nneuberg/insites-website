@@ -3,7 +3,7 @@ import {setup,inspection} from './review-fields-cutover-harness.mjs';
 import {reviewEnvironment} from '../netlify/lib/review-launch.mjs';
 import {syncOwner,syncReferrals} from '../netlify/lib/referral-mailchimp.mjs';
 test('field cutover preserves stage receipts, independent terminal facts, consent, owner fields and explicit hold',async()=>{
- assert.equal(reviewEnvironment().REVIEW_ENABLED,'true');assert.equal(reviewEnvironment().REVIEW_PROJECTION_PAUSED,'true');
+ assert.equal(reviewEnvironment().REVIEW_ENABLED,'true');assert.equal(reviewEnvironment().REVIEW_PROJECTION_PAUSED,'false');
  assert.deepEqual(await syncReferrals({env:{REFERRAL_MAILCHIMP_ENABLED:'true'},request:()=>assert.fail('held'),callLedger:()=>assert.fail('held')}),{enabled:false});
  let lost=true;
  const s=setup({intercept:async(u,o,next)=>{const result=await next(u,o);if(lost&&o.body&&JSON.parse(o.body).merge_fields?.RVPEND==='STAGE0'){lost=false;throw Error('Lost accepted response');}return result;}});
@@ -12,7 +12,7 @@ test('field cutover preserves stage receipts, independent terminal facts, consen
  await s.engine.process(row.token);
  assert.equal(s.calls.filter(c=>c.body?.merge_fields?.RVPEND==='STAGE0').length,1);
  assert.deepEqual((await s.engine.get(row.token)).sentStages,[0]);
- s.advance(3);await s.engine.process(row.token);
+ s.advance(7+15/1440);await s.engine.process(row.token);
  assert.equal(s.calls.filter(c=>c.body?.merge_fields?.RVPEND==='STAGE1').length,1);
  assert.equal(s.calls.some(c=>c.path.endsWith('/tags')),false);
  await s.engine.feedback(row.token,{rating:5,feedback:'Synthetic feedback'});
