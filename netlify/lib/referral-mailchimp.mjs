@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import {ledger} from './referral-transport.mjs';
+import {MAILCHIMP_STATE_MIGRATION} from './mailchimp-state-migration.mjs';
 export const REFERRAL_TAG='REF:CODE-OWNER';
 const normalize=value=>String(value||'').trim().toLowerCase();
 export function referralDates(assignedAt){
@@ -50,11 +51,12 @@ export async function syncOwner(owner,{request,now=new Date(),member}={}){
   const result=await request('PUT',path,{email_address:email,status_if_new:'subscribed',merge_fields:merged});
   if(result.status&&result.status!=='subscribed')return {status:'suppressed'};
  }
- if(!existing?.tags?.some(t=>t.name===REFERRAL_TAG))await request('POST',path+'/tags',{tags:[{name:REFERRAL_TAG,status:'active'}]});
+ // Referral ownership is projected by the existing immutable REFCODE fields.
+ // Do not recreate Mailchimp-only tags after Hive becomes the tag owner.
  return {status:changed?'synced':'unchanged'};
 }
 export async function syncReferrals({env=process.env,callLedger=()=>ledger('codeSnapshot',{},env,7000),request,now=new Date()}={}){
- if(env.REFERRAL_MAILCHIMP_ENABLED!=='true'||(!request&&!env.MAILCHIMP_API_KEY))return {enabled:false};
+ if(MAILCHIMP_STATE_MIGRATION.paused||env.REFERRAL_MAILCHIMP_ENABLED!=='true'||(!request&&!env.MAILCHIMP_API_KEY))return {enabled:false};
  const api=request||mailchimpClient(env),owners=referralOwners(await callLedger());
  const result={enabled:true,synced:0,unchanged:0,suppressed:0,review:0,capacity:0,failed:0};
  if(!owners.length)return result;
@@ -78,3 +80,4 @@ export async function syncReferrals({env=process.env,callLedger=()=>ledger('code
  if(result.failed)throw Error(`Mailchimp referral sync: ${result.failed} contact(s) need retry`);
  return result;
 }
+

@@ -1,2 +1,4 @@
+import {MAILCHIMP_STATE_MIGRATION} from './mailchimp-state-migration.mjs';
 export const REVIEW_LAUNCH=Object.freeze({enabled:true,startAfter:'2026-10-23T00:02:00.000Z',agentEnabled:true,agentStartAfter:'2026-10-23T00:52:00.000Z'});
-export function reviewEnvironment(env=process.env){return {...env,REVIEW_ENABLED:REVIEW_LAUNCH.enabled?'true':'false',REVIEW_START_AFTER:REVIEW_LAUNCH.startAfter,REVIEW_CLIENT_ONLY:'false',REVIEW_AGENT_ENABLED:REVIEW_LAUNCH.agentEnabled?'true':'false',REVIEW_AGENT_START_AFTER:REVIEW_LAUNCH.agentStartAfter,REVIEW_BUYER_ONLY:'true',REVIEW_REFERRALS_ENABLED:'false'};}
+export function reviewEnvironment(env=process.env){return {...env,REVIEW_ENABLED:REVIEW_LAUNCH.enabled?'true':'false',REVIEW_PROJECTION_PAUSED:MAILCHIMP_STATE_MIGRATION.paused?'true':'false',REVIEW_START_AFTER:REVIEW_LAUNCH.startAfter,REVIEW_CLIENT_ONLY:'false',REVIEW_AGENT_ENABLED:REVIEW_LAUNCH.agentEnabled?'true':'false',REVIEW_AGENT_START_AFTER:REVIEW_LAUNCH.agentStartAfter,REVIEW_BUYER_ONLY:'true',REVIEW_REFERRALS_ENABLED:'false'};}
+

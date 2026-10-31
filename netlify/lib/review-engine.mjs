@@ -5,6 +5,7 @@ import {createHash,randomBytes} from 'node:crypto';
 import {AUDIENCES,DAY,ORIGIN,eligibleRecipients,referralDates,dueStage,validToken} from './review-policy.mjs';
 export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.now(),hivePaused=false,hiveTransport=null,sourceContact=null}){
  const inLaunchScope=row=>inReviewScope(row,env);
+ const projectionPaused=env.REVIEW_PROJECTION_PAUSED==='true';
  const hash=s=>createHash('sha256').update(s).digest('hex');
  const rowKey=t=>'requests/'+t;
  async function api(url,options={}){
@@ -39,16 +40,17 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  async function finish(row){
   // Test feedback is stored locally but must never change real audience tags.
   if(row.isTest){row.finishSynced=true;await save(row);return;}
-  if(env.REVIEW_ENABLED!=='true')return;
-  await mc(row,{tags:[{name:'REVIEW:PENDING',status:'inactive'},...(row.ratedAt?[{name:'feedback received',status:'active'}]:[]),...(row.googleReviewedAt?[{name:'google reviewed',status:'active'}]:[])]},'POST','/tags');
+  if(projectionPaused||env.REVIEW_ENABLED!=='true')return;
+  await mc(row,{merge_fields:{RVPEND:'ENDED',...(row.ratedAt?{RVFEED:'YES'}:{}),...(row.googleReviewedAt?{RVGDONE:'YES'}:{})}});
   // Review launch must not enroll clients into unrelated referral journeys.
   if(env.REVIEW_REFERRALS_ENABLED==='true'&&row.role==='Customer'&&!row.isTest)await mc(row,{merge_fields:referralDates(row.endedAt)});
   row.finishSynced=true;await save(row);
  }
  async function syncHiveTag(row){
-  if(row.isTest||env.REVIEW_ENABLED!=='true')return;
+  if(row.isTest||projectionPaused||env.REVIEW_ENABLED!=='true')return;
   const contact=await hive('contacts/'+encodeURIComponent(row.contactId));
-  const tags=(contact.tags||[]).map(t=>t.name);
+  if(!Array.isArray(contact.tags)||contact.tags.some(t=>typeof t?.name!=='string'||!t.name.trim()))throw new HiveUnavailable();
+  const tags=contact.tags.map(t=>t.name);
   // Reuse the verified Hive taxonomy spelling; never add a case-only duplicate.
   if(!tags.some(name=>name.toLowerCase()==='google reviewed')){
    await hive('contacts/'+encodeURIComponent(row.contactId),{tags:[...tags,'google reviewed']});
@@ -77,23 +79,30 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   }));
  }
  async function send(row,stage){
+  if(projectionPaused)return;
   const member=await mc(row,undefined,'GET');
-  if(member.tags?.some(t=>t.name==='google reviewed')){row.googleReviewedAt=now();row.endedAt=now();await save(row);await finish(row);return;}
+  if(member.merge_fields?.RVGDONE==='YES'||member.tags?.some(t=>t.name==='google reviewed')){row.googleReviewedAt=now();row.endedAt=now();await save(row);await finish(row);return;}
   if(member.status!=='subscribed'){row.endedAt=now();row.suppressed=true;row.finishSynced=true;await save(row);return;}
-  const pending=member.tags?.some(t=>t.name==='REVIEW:PENDING');
-  // Reconcile ambiguous tag-add responses without re-triggering the same send.
+  if(!member.merge_fields||!['RVPEND','RVFEED','RVGDONE'].every(k=>Object.hasOwn(member.merge_fields,k)))throw Error('Review field schema unavailable');
+  if(!['','YES'].includes(member.merge_fields.RVFEED)||!['','YES'].includes(member.merge_fields.RVGDONE))throw Error('Unknown review terminal state');
+  if(member.merge_fields.RVFEED==='YES'){row.endedAt=now();await save(row);await finish(row);return;}
+  if(member.merge_fields.RVPEND==='ENDED'){row.endedAt=now();row.finishSynced=true;await save(row);return;}
+  const stageValue='STAGE'+stage,pending=member.merge_fields.RVPEND===stageValue;
+  // Existing policy is ONE sequence per person. Monotonic stage values replace
+  // remove/re-add tag toggles. This acknowledges projection, not email delivery.
   if(row.preparingStage===stage&&row.stagePrepared&&pending){row.sentStages=[...new Set([...row.sentStages,...Array.from({length:stage+1},(_,n)=>n)])];delete row.preparingStage;delete row.stagePrepared;await save(row);return;}
+  if(pending||member.merge_fields.RVPEND==='ENDED'||/^STAGE[0-2]$/.test(member.merge_fields.RVPEND)&&Number(member.merge_fields.RVPEND.slice(-1))>=stage)throw Error('Review stage requires reconciliation');
+  if(member.merge_fields.RVPEND!==''&&!/^STAGE[0-2]$/.test(member.merge_fields.RVPEND))throw Error('Unknown review stage');
   row.preparingStage=stage;row.stagePrepared=false;await save(row);
-  await mc(row,{tags:[{name:'REVIEW:PENDING',status:'inactive'}]},'POST','/tags');
   // Existing Mailchimp star links append ?rating=N, so keep REVLINK query-free.
   await mc(row,{merge_fields:{REVLINK:ORIGIN+'/review/r/'+row.token,REVADDR:row.address}});
   row.stagePrepared=true;await save(row);
-  await mc(row,{tags:[{name:'REVIEW:PENDING',status:'active'}]},'POST','/tags');
+  await mc(row,{merge_fields:{RVPEND:stageValue}});
   row.sentStages=[...new Set([...row.sentStages,...Array.from({length:stage+1},(_,n)=>n)])];delete row.preparingStage;delete row.stagePrepared;await save(row);
  }
  async function enroll(inspection){
   const cutoff=Date.parse(env.REVIEW_START_AFTER||'');
-  if(!Number.isFinite(cutoff)||env.REVIEW_ENABLED!=='true')return {paused:true};
+  if(projectionPaused||!Number.isFinite(cutoff)||env.REVIEW_ENABLED!=='true')return {paused:true};
   let added=0;
   for(const original of eligibleRecipients(inspection,now())){
    if(original.endedAt<cutoff)continue;
@@ -128,7 +137,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
     const token=index?.token||randomBytes(24).toString('hex');
     const row={...person,inspectionEndedAt:person.endedAt,endedAt:null,token,createdAt:now(),expiresAt:now()+14*DAY,sentStages:[]};
     delete row.endedAt;
-    try{const member=await mc(row,undefined,'GET');if(member.status!=='subscribed'||member.tags?.some(t=>t.name==='google reviewed'))return;}catch(e){if(e.status===404)return;throw e;}
+    try{const member=await mc(row,undefined,'GET');if(member.status!=='subscribed'||member.merge_fields?.RVGDONE==='YES'||member.tags?.some(t=>t.name==='google reviewed'))return;}catch(e){if(e.status===404)return;throw e;}
     // Index and row creation happen under a per-person lock; indexes recover from a crash between writes.
     await store.setJSON(indexKey,{token},{onlyIfNew:true});await save(row);added++;
    });
@@ -136,7 +145,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   return {added};
  }
  async function process(token){
-  if(env.REVIEW_ENABLED!=='true'||excludedRequest(token))return;
+  if(projectionPaused||env.REVIEW_ENABLED!=='true'||excludedRequest(token))return;
   const initial=await get(token);if(!initial)return;
   return locked(initial.role+':'+initial.email,async()=>{
    const row=await get(token);
@@ -169,7 +178,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   });
  }
  async function run({discover=true}={}){
-  if(env.REVIEW_ENABLED!=='true'||!Number.isFinite(Date.parse(env.REVIEW_START_AFTER||'')))return {paused:true};
+  if(projectionPaused||env.REVIEW_ENABLED!=='true'||!Number.isFinite(Date.parse(env.REVIEW_START_AFTER||'')))return {paused:true};
   let read=0,discoveryDeferred=false;
   if(discover){
   try{
@@ -200,3 +209,4 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  }
  return {get,save,hive,mc,locked,enroll,process,feedback,confirmGoogle,run};
 }
+
