@@ -1,4 +1,4 @@
-import {beginSourceTraversal,appendSourcePage,finishSourceTraversal} from './hive-source-cache.mjs';
+import {beginSourceTraversal,appendSourcePage,finishSourceTraversal,finishObservedContactTraversal} from './hive-source-cache.mjs';
 import {sourceListPath,sourceIdBatches,normalizeListRecord,SOURCE_PLAN} from './hive-source-sync.mjs';
 import {runHiveSourceEventWorker,SOURCE_COORDINATOR_LEASE,SOURCE_WORK_KEY} from './hive-source-event-worker.mjs';
 export const SOURCE_COORDINATOR_KEY='hive-source-coordinator/v1';
@@ -37,7 +37,7 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
   const originalStore=store,originalCache=cache,originalTransport=transport;
   transport={request:async(...args)=>{await lease.assertHeld();return originalTransport.request(...args)}};
   store=new Proxy(originalStore,{get(target,key){if(key==='delete')return async(...args)=>{await lease.assertHeld();return target.delete(...args)};if(key==='setJSON')return async(...args)=>{await lease.assertHeld();return target.setJSON(...args)};const value=target[key];return typeof value==='function'?value.bind(target):value}});
-  cache={...cache,apply:async(...args)=>{await lease.assertHeld();return originalCache.apply(...args)},publishTraversal:async(...args)=>{await lease.assertHeld();return originalCache.publishTraversal(...args)}};
+  cache={...cache,...Object.fromEntries(['apply','publishTraversal','applyObservedContacts','publishObservedContactTraversal'].map(method=>[method,async(...args)=>{await lease.assertHeld();return originalCache[method](...args)}]))};
   let state=(await store.getWithMetadata(SOURCE_COORDINATOR_KEY,{type:'json'}))?.data||{schema:1,active:null,hourlyAt:0,tagsAt:0,pendingAt:0,fullRolesAt:0,contactsAt:0,contactsOffset:0,pendingOffset:0};
   if(state.schema!==1)throw Error('Invalid coordinator state');
   // A separate private generation prevents silent same-revision repair overrides.
@@ -71,7 +71,7 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
    const pendingBatches=sourceIdBatches(work.pendingInspectionIds);
    if(!state.active&&work.globalRoleDirty&&pendingBatches.length&&now()-state.pendingAt>=HOUR)await start('inspections','pending',{ids:pendingBatches[(state.pendingOffset||0)%pendingBatches.length]});
    if(!state.active&&work.refreshContactIds.length&&now()-(state.contactsAt||0)>=HOUR)await start('contacts','contacts',{ids:sourceIdBatches(work.refreshContactIds)[(state.contactsOffset||0)%sourceIdBatches(work.refreshContactIds).length]});
-   if(!state.active&&work.globalRoleDirty&&now()-state.fullRolesAt>=DAY)await start('contacts','roles',{},'all');
+   if(!state.active&&work.globalRoleDirty&&work.roleMappingUnknown&&now()-state.fullRolesAt>=DAY)await start('contacts','roles',{},'all');
    if(!state.active)for(const kind of ['contacts','inspections'])if(now()-snap.state.coverage[kind].watermark>=DAY){await start(kind,kind==='contacts'&&!contactDeletionRecoveryVerified?'contacts-safety':'delta',{},'all');break;}
    if(!state.active&&now()-state.tagsAt>=DAY){
     try{const response=await transport.request('tags');const page=await response.json();if(!Array.isArray(page.data)||page.next_cursor!==null||page.total!==page.data.length||page.data.length>200)throw Error('Incomplete tag catalog');await save(store,'hive-source-tags/v1',{schema:1,checkedAt:now(),data:page.data});state.tagsAt=now();await save(store,SOURCE_COORDINATOR_KEY,state);return {requests:1,task:'tags'};}catch(error){if(error.code==='HIVE_TRANSPORT_DEFERRED')return deferred(error);throw error;}
@@ -90,7 +90,13 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
   const all=t.scope==='all',current=await cache.read();
   await lease.assertHeld();
   // A completed cache publish followed by a failed work checkpoint is replayable.
-  if(all){if(!same(current.state,finishSourceTraversal(t)))await cache.publishTraversal(task.snapshot,t);}
+  if(task.kind==='contacts'&&!repairGeneration){
+   // Conservative request/traversal-start boundary, never delayed publication time.
+   // Persist once so publication retry remains idempotent.
+   if(!task.observedAt){task.observedAt=t.startedAt;await save(store,SOURCE_COORDINATOR_KEY,state);}
+   if(all){if(!same(current.state,finishObservedContactTraversal(t,task.observedAt)))await cache.publishObservedContactTraversal(task.snapshot,t,task.observedAt);}
+   else {const applied=await cache.applyObservedContacts(t.rows,task.observedAt);if(applied?.schema!==1)throw Error('Cache publication unacknowledged');}
+  }else if(all){if(!same(current.state,finishSourceTraversal(t)))await cache.publishTraversal(task.snapshot,t);}
   else {const applied=await cache.apply(t.rows);if(applied?.schema!==1)throw Error('Cache publication unacknowledged');}
   const published=(await cache.read()).state;
   if(repairGeneration){state.active=null;await save(store,SOURCE_COORDINATOR_KEY,state);return {requests,task:task.purpose,complete:true,generation:state.generation,consumerPromotion:false};}

@@ -21,7 +21,12 @@ export function planHiveSourceEvent(row){
    ...(deleted?{updated_at:row.firedAt,deleted_at:row.firedAt}:{})
   });
   if(normalized.revision>firedRevision)throw Error('Source version is newer than event');
-  return {eventId:row.eventId,contactUpdates:[normalized],pendingInspectionIds:[],refreshContactIds:[],invalidateContactRoleAuthority:false};
+  // Webhook snapshots may predate the repair generation or carry unchanged
+  // updated_at for changed tags. Invalidate and fetch current full contacts;
+  // deletion payloads also require current-ID verification: traversal timing
+  // cannot prove a delayed tombstone is newer than the observed active record.
+  // Missing IDs stay invalidated; absence is never synthesized into deletion.
+  return {eventId:row.eventId,contactUpdates:[],pendingInspectionIds:[],refreshContactIds:[contact.id],invalidateContactRoleAuthority:false};
  }
  const data=row.data,inspection=data.inspection;
  if(!object(inspection)||!idOK(inspection.id)||!Array.isArray(data.buyers)||!Object.hasOwn(data,'buying_agent')||!Object.hasOwn(data,'selling_agent'))throw Error('Incomplete inspection event');

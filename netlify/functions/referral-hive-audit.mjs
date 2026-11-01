@@ -8,7 +8,7 @@ import {ledger} from '../lib/referral-transport.mjs';
 // Read-only audit of shared source; never an independent API scan.
 export default async(_request,context)=>{
  if(HIVE_INCIDENT.paused){console.log('Hive API work deferred: monthly quota incident');return new Response(null,{status:204});}
- if(context?.deploy?.context!=='production'||!SOURCE_PLAN.enabled)return new Response(null,{status:204});
+ if(context?.deploy?.context!=='production'||!SOURCE_PLAN.enabled||!SOURCE_PLAN.referralReconciliationEnabled)return new Response(null,{status:204});
  try{
   const {store,cache,view}=sourceServices(context),{state}=await cache.read();
   assertSourceAuthority(state,'inspections',{now:Date.now(),maxAgeMs:86400000});

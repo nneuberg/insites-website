@@ -1,3 +1,4 @@
+import {REVIEW_INTAKE_START_AFTER,allowsReviewIntake} from './review-intake.mjs';
 import {eligibleRecipients} from './review-policy.mjs';
 import {assertSourceAuthority} from './hive-source-cache.mjs';
 // Local cache discovery replaces polling; normal review follow-ups retain their
@@ -13,7 +14,7 @@ export async function runCachedReviewWorker({cache,view,engine,store,now=()=>Dat
   for(let step=0;step<rows.length;step++){
    if(considered>=limit)break;
    const at=(start+step)%rows.length,row=rows[at];
-   if(row.deleted)continue;
+   if(row.deleted||!allowsReviewIntake(row.data,REVIEW_INTAKE_START_AFTER))continue;
    // No7day cutoff: late payments/signatures on old inspections remain eligible.
    if(!eligibleRecipients(row.data,now()).length)continue;
    const key='hive-source-review/'+encodeURIComponent(row.id),previous=await store.get(key,{type:'json'});

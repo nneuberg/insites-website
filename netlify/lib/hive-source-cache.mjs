@@ -57,6 +57,40 @@ export function finishSourceTraversal(t){
  state.coverage[t.kind]={complete:missingIds.length===0,missingIds,scope:t.scope,watermark:t.startedAt,historyComplete:t.mode==='delta'?t.base.coverage[t.kind].historyComplete:t.historyComplete};
  return state;
 }
+
+// Only a completed, current provider GET may use this path. Signed events and
+// generic cache writes remain strictly revision-ordered. Never repair identities,
+// roles, deletions or an already-quarantined unknown conflict at equal revision.
+export function applyObservedContactRecords(state,rows,observedAt){
+ if(!time(observedAt))throw Error('Invalid observation time');
+ const base=clone(state);base.contactObservations||={};
+ for(const raw of rows){
+  const row=validate(raw);if(row.kind!=='contacts')throw Error('Contact observation required');
+  const old=base.contacts[row.id],key='contacts:'+row.id;
+  if(!old||old.revision!==row.revision||Object.hasOwn(base.conflicts,key))continue;
+  const withoutTags=r=>{const copy=clone(r);delete copy.data.tags;return copy;};
+  if(!Array.isArray(row.data.tags)||!Array.isArray(old.data.tags)||!equal(withoutTags(old),withoutTags(row)))continue;
+  if(!equal(old.data.tags,row.data.tags)){
+   if(base.contactObservations[row.id]?.observedAt>observedAt)throw Error('Observation time regressed');
+   base.contacts[row.id]=row;
+  }
+ }
+ const result=applySourceRecords(base,rows);
+ // Every accepted complete observation retains its conservative GET boundary,
+ // including unchanged records; no observation receipt for a held conflict.
+ for(const raw of rows){const row=validate(raw),prior=result.contactObservations[row.id];
+  if(Object.hasOwn(result.conflicts,'contacts:'+row.id)||!equal(result.contacts[row.id],row))continue;
+  if(prior?.observedAt>observedAt)throw Error('Observation time regressed');
+  result.contactObservations[row.id]={observedAt,revision:row.revision,fields:['complete-contact']};
+ }
+ return result;
+}
+export function finishObservedContactTraversal(t,observedAt){
+ if(t.kind!=='contacts'||observedAt<t.startedAt)throw Error('Invalid contact traversal observation');
+ const result=finishSourceTraversal(t),observed=applyObservedContactRecords(t.base,t.rows,observedAt);
+ return {...result,contacts:observed.contacts,conflicts:observed.conflicts,contactObservations:observed.contactObservations};
+}
+
 export function createSourceCache({store,key='hive-source-cache/v1'}){
  const read=async()=>{const found=await store.getWithMetadata(key,{type:'json'});return {state:found?.data||emptySourceCache(),etag:found?.etag??null};};
  async function publish(snapshot,state){
@@ -64,7 +98,7 @@ export function createSourceCache({store,key='hive-source-cache/v1'}){
   if(result?.modified!==true)throw Error('Source cache changed; restart without advancing watermark');
   return state;
  }
- return {read,async apply(rows){const snapshot=await read();return publish(snapshot,applySourceRecords(snapshot.state,rows));},async publishTraversal(snapshot,traversal){
+ return {read,async applyObservedContacts(rows,observedAt){const snapshot=await read();return publish(snapshot,applyObservedContactRecords(snapshot.state,rows,observedAt));},async publishObservedContactTraversal(snapshot,traversal,observedAt){if(!equal(snapshot.state,traversal.base))throw Error('Traversal snapshot mismatch');return publish(snapshot,finishObservedContactTraversal(traversal,observedAt));},async apply(rows){const snapshot=await read();return publish(snapshot,applySourceRecords(snapshot.state,rows));},async publishTraversal(snapshot,traversal){
   if(!equal(snapshot.state,traversal.base))throw Error('Traversal snapshot mismatch');
   return publish(snapshot,finishSourceTraversal(traversal));
  }};

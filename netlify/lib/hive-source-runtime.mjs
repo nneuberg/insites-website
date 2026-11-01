@@ -13,10 +13,10 @@ export function sourceStore(context){
  return getStore({name,consistency:'strong'});
 }
 export function sourceTransport(context,{seedOnly=false}={}){
- return createHiveTransport({store:sourceStore(context),apiKey:process.env.HIVE_API_KEY,paused:seedOnly?false:HIVE_INCIDENT.paused||!SOURCE_PLAN.enabled,readOnly:seedOnly,requireQuota:seedOnly,verifiedProviderLimit:25000,dailyBudget:100,rollingBudget:3000,timeoutMs:seedOnly?12000:8000});
+ return createHiveTransport({store:sourceStore(context),apiKey:process.env.HIVE_API_KEY,paused:seedOnly?false:HIVE_INCIDENT.paused||!SOURCE_PLAN.enabled,readOnly:true,requireQuota:true,verifiedProviderLimit:25000,dailyBudget:100,rollingBudget:3000,timeoutMs:12000});
 }
 export function sourceServices(context,{seedOnly=false}={}){
- const store=sourceStore(context),cache=createSourceCache({store,...(seedOnly?{key:'hive-source-cache/post-repair-20261031'}:{})});
+ const store=sourceStore(context),cache=createSourceCache({store,key:'hive-source-cache/post-repair-20261031'});
  let barriersPromise;
  const barriers=()=>barriersPromise||=(async()=>{
   const work=await store.get('hive-source-work/v1',{type:'json'});
@@ -34,7 +34,7 @@ export function sourceServices(context,{seedOnly=false}={}){
   return {contacts,inspections,global};
  })();
  const view=createSourceView({cache,invalidatedIds:async()=>{const state=await barriers();if(state.global)throw new HiveSourceDeferred('Contact role authority awaits reconciliation');return state.contacts;},invalidatedInspectionIds:async()=>(await barriers()).inspections});
- return {store,cache,view,transport:sourceTransport(context,{seedOnly}),withLease:seedOnly?reconciledSeedLease(store):createHiveSourceLease({store}).withLease};
+ return {store,cache,view,transport:sourceTransport(context,{seedOnly}),withLease:seedOnly?reconciledSeedLease(store):createHiveSourceLease({store,leaseMs:45000,workMs:25000}).withLease};
 }
 
 // One-time recovery of the operator-inspected, expired GET-only seed timeout.

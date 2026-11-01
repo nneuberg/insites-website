@@ -1,3 +1,4 @@
+import {allowsReviewIntake} from './review-intake.mjs';
 import {HiveUnavailable,hiveUnavailable} from './hive-incident.mjs';
 import {queueLowRating,deliverLowRating} from './review-low-rating.mjs';
 import {inReviewScope,excludedRequest,roleCutoff} from './review-scope.mjs';
@@ -59,7 +60,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   row.finishSynced=true;await save(row);
  }
  async function syncHiveTag(row){
-  if(row.isTest||projectionPaused||env.REVIEW_ENABLED!=='true')return;
+  if(row.isTest||projectionPaused||env.REVIEW_ENABLED!=='true'||env.REVIEW_HIVE_TAG_WRITES_ENABLED==='false')return;
   const contact=await hive('contacts/'+encodeURIComponent(row.contactId));
   if(!Array.isArray(contact.tags)||contact.tags.some(t=>typeof t?.name!=='string'||!t.name.trim()))throw new HiveUnavailable();
   const tags=contact.tags.map(t=>t.name);
@@ -118,6 +119,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   row.sentStages=[...new Set([...row.sentStages,...Array.from({length:stage+1},(_,n)=>n)])];delete row.preparingStage;delete row.stagePrepared;await save(row);
  }
  async function enroll(inspection){
+  if(env.REVIEW_INTAKE_START_AFTER!==undefined&&!allowsReviewIntake(inspection,env.REVIEW_INTAKE_START_AFTER))return {added:0,intakeHeld:true};
   const cutoff=Date.parse(env.REVIEW_START_AFTER||'');
   if(projectionPaused||!Number.isFinite(cutoff)||env.REVIEW_ENABLED!=='true')return {paused:true};
   let added=0;
@@ -222,7 +224,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
     if(!inLaunchScope(row))continue;
     if(!needsLegacyHold(row)&&row.lowRatingAlert?.state!=='pending'&&(row.finishSynced&&(!row.googleReviewedAt||row.hiveTagSynced)||!row.endedAt&&now()<row.expiresAt&&dueStage(row,now())===null))continue;
     // Already-finished rows waiting only on Hive must not consume the send budget.
-    if(hivePaused&&row.endedAt&&row.finishSynced&&row.googleReviewedAt&&!row.hiveTagSynced&&row.lowRatingAlert?.state!=='pending'){hiveDeferred++;continue;}
+    if((hivePaused||env.REVIEW_HIVE_TAG_WRITES_ENABLED==='false')&&row.endedAt&&row.finishSynced&&row.googleReviewedAt&&!row.hiveTagSynced&&row.lowRatingAlert?.state!=='pending'){hiveDeferred++;continue;}
     if(processed>=20)return {read,processed,discoveryDeferred,hiveDeferred};
     try{await process(token);}catch(error){if(!hiveUnavailable(error))throw error;hiveDeferred++;}
     processed++;

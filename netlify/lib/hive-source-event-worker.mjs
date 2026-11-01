@@ -25,7 +25,7 @@ export async function runHiveSourceEventWorker({store,cache,withLease,enabled=fa
   let attempted=0,processed=0,failed=0;
   async function archive(key,row){
    const receiptKey='hive-source-event-receipts/'+key.slice('hive-source-events/pending/'.length);
-   const receipt={schema:1,eventId:row.eventId,organizationId:row.organizationId,digest:row.digest,state:'done',completedAt:row.completedAt};
+   const receipt={schema:1,eventId:row.eventId,organizationId:row.organizationId,digest:row.digest,sourceEvent:row.event,firedAt:row.firedAt,...(row.data?.contact?.id?{contactId:row.data.contact.id}:{}),state:'done',completedAt:row.completedAt};
    if(typeof receipt.digest!=='string'||!receipt.digest)throw Error('Completion digest missing');
    await lease.assertHeld();
    const saved=await store.setJSON(receiptKey,receipt,{onlyIfNew:true});
