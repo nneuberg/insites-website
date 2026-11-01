@@ -1,4 +1,4 @@
-import {beginSourceTraversal,appendSourcePage,finishSourceTraversal,finishObservedContactTraversal} from './hive-source-cache.mjs';
+import {beginSourceTraversal,appendSourcePage,finishSourceTraversal,finishObservedContactTraversal,finishObservedInspectionTraversal} from './hive-source-cache.mjs';
 import {sourceListPath,sourceIdBatches,normalizeListRecord,SOURCE_PLAN} from './hive-source-sync.mjs';
 import {runHiveSourceEventWorker,SOURCE_COORDINATOR_LEASE,SOURCE_WORK_KEY} from './hive-source-event-worker.mjs';
 export const SOURCE_COORDINATOR_KEY='hive-source-coordinator/v1';
@@ -37,7 +37,7 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
   const originalStore=store,originalCache=cache,originalTransport=transport;
   transport={request:async(...args)=>{await lease.assertHeld();return originalTransport.request(...args)}};
   store=new Proxy(originalStore,{get(target,key){if(key==='delete')return async(...args)=>{await lease.assertHeld();return target.delete(...args)};if(key==='setJSON')return async(...args)=>{await lease.assertHeld();return target.setJSON(...args)};const value=target[key];return typeof value==='function'?value.bind(target):value}});
-  cache={...cache,...Object.fromEntries(['apply','publishTraversal','applyObservedContacts','publishObservedContactTraversal'].map(method=>[method,async(...args)=>{await lease.assertHeld();return originalCache[method](...args)}]))};
+  cache={...cache,...Object.fromEntries(['apply','publishTraversal','applyObservedContacts','publishObservedContactTraversal','applyObservedInspections','publishObservedInspectionTraversal'].map(method=>[method,async(...args)=>{await lease.assertHeld();return originalCache[method](...args)}]))};
   let state=(await store.getWithMetadata(SOURCE_COORDINATOR_KEY,{type:'json'}))?.data||{schema:1,active:null,hourlyAt:0,tagsAt:0,pendingAt:0,fullRolesAt:0,contactsAt:0,contactsOffset:0,pendingOffset:0};
   if(state.schema!==1)throw Error('Invalid coordinator state');
   // A separate private generation prevents silent same-revision repair overrides.
@@ -68,6 +68,11 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
   if(!state.active){
    // Existing incomplete baseline is resumed, never restarted on every tick.
    for(const kind of ['contacts','inspections'])if(!snap.state.coverage[kind]?.complete&&(!snap.state.coverage[kind]||now()-snap.state.coverage[kind].watermark>=DAY)){await start(kind,'baseline',{},'all');break;}
+   // One bounded current-ID observation of held inspection revisions; never a
+   // full refresh or recurring conflict retry. Missing/unsafe rows stay held.
+   const conflictIds=Object.keys(snap.state.conflicts).filter(k=>k.startsWith('inspections:')).map(k=>k.slice(12)).sort();
+   if(!state.active&&!repairGeneration&&state.inspectionPhotoRecheckVersion!=='signed-cover-auth-v1'&&conflictIds.length&&conflictIds.length<=200)
+    await start('inspections','photo-conflict-recheck',{ids:conflictIds});
    const pendingBatches=sourceIdBatches(work.pendingInspectionIds);
    if(!state.active&&work.globalRoleDirty&&pendingBatches.length&&now()-state.pendingAt>=HOUR)await start('inspections','pending',{ids:pendingBatches[(state.pendingOffset||0)%pendingBatches.length]});
    if(!state.active&&work.refreshContactIds.length&&now()-(state.contactsAt||0)>=HOUR)await start('contacts','contacts',{ids:sourceIdBatches(work.refreshContactIds)[(state.contactsOffset||0)%sourceIdBatches(work.refreshContactIds).length]});
@@ -83,8 +88,8 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
   const task=state.active;let requests=0;
   if(!task.traversal.done){
    let pageSummary=null;const t=task.traversal,params={...task.params,cursor:t.nextCursor,...(task.purpose==='delta'?{since:t.since}:{})};
-   try{const response=await transport.request(sourceListPath(task.kind,params));requests=1;const page=await response.json();pageSummary={rows:Array.isArray(page?.data)?page.data.length:null,total:Number.isSafeInteger(page?.total)?page.total:null,cursorKind:page?.next_cursor===null?'null':typeof page?.next_cursor};task.traversal=appendSourcePage(t,{cursor:t.nextCursor,rows:page.data.map(r=>normalizeListRecord(task.kind,r)),nextCursor:page.next_cursor,total:page.total});await save(store,SOURCE_COORDINATOR_KEY,state);}
-   catch(error){if(error.code==='HIVE_TRANSPORT_DEFERRED')return deferred(error);if(requests===1){const safeReasons=['Incomplete or inconsistent pagination','Duplicate or wrong source identities','Pagination cycle','Incomplete coverage','Incomplete source record','Incomplete contact authority','Incomplete contact tags or roles','Missing source revision','Invalid source calendar time','Invalid source revision','Invalid normalized source record','Invalid normalized email identities'];state.quarantined=true;state.validationFailure={at:now(),kind:task.kind,purpose:task.purpose,page:pageSummary,pages:task.traversal.pages,rows:task.traversal.rows.length,total:task.traversal.total,reason:safeReasons.includes(error.message)?error.message:'source-page-invalid'};await save(store,SOURCE_COORDINATOR_KEY,state);return {deferred:true,reason:'source-page-quarantined',requests:1,validation:state.validationFailure};}throw error;}
+   try{const response=await transport.request(sourceListPath(task.kind,params));requests=1;const page=await response.json();pageSummary={rows:Array.isArray(page?.data)?page.data.length:null,total:Number.isSafeInteger(page?.total)?page.total:null,cursorKind:page?.next_cursor===null?'null':typeof page?.next_cursor};if(task.purpose==='photo-conflict-recheck'&&(!Array.isArray(page.data)||page.next_cursor!==null||page.total!==page.data.length||page.data.length>task.params.ids.length||page.data.some(r=>!task.params.ids.includes(r?.id))))throw Error('Unexpected inspection identity');task.traversal=appendSourcePage(t,{cursor:t.nextCursor,rows:page.data.map(r=>normalizeListRecord(task.kind,r)),nextCursor:page.next_cursor,total:page.total});await save(store,SOURCE_COORDINATOR_KEY,state);}
+   catch(error){if(error.code==='HIVE_TRANSPORT_DEFERRED')return deferred(error);if(requests===1){const safeReasons=['Unexpected inspection identity','Incomplete or inconsistent pagination','Duplicate or wrong source identities','Pagination cycle','Incomplete coverage','Incomplete source record','Incomplete contact authority','Incomplete contact tags or roles','Missing source revision','Invalid source calendar time','Invalid source revision','Invalid normalized source record','Invalid normalized email identities'];state.quarantined=true;state.validationFailure={at:now(),kind:task.kind,purpose:task.purpose,page:pageSummary,pages:task.traversal.pages,rows:task.traversal.rows.length,total:task.traversal.total,reason:safeReasons.includes(error.message)?error.message:'source-page-invalid'};await save(store,SOURCE_COORDINATOR_KEY,state);return {deferred:true,reason:'source-page-quarantined',requests:1,validation:state.validationFailure};}throw error;}
   }
   const t=task.traversal;if(!t.done)return {requests,task:task.purpose,complete:false};
   const all=t.scope==='all',current=await cache.read();
@@ -96,7 +101,10 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
    if(!task.observedAt){task.observedAt=t.startedAt;await save(store,SOURCE_COORDINATOR_KEY,state);}
    if(all){if(!same(current.state,finishObservedContactTraversal(t,task.observedAt)))await cache.publishObservedContactTraversal(task.snapshot,t,task.observedAt);}
    else {const applied=await cache.applyObservedContacts(t.rows,task.observedAt);if(applied?.schema!==1)throw Error('Cache publication unacknowledged');}
-  }else if(all){if(!same(current.state,finishSourceTraversal(t)))await cache.publishTraversal(task.snapshot,t);}
+  }else if(task.kind==='inspections'&&!repairGeneration){
+   if(all){if(!same(current.state,finishObservedInspectionTraversal(t,t.startedAt)))await cache.publishObservedInspectionTraversal(task.snapshot,t,t.startedAt);}
+   else {const applied=await cache.applyObservedInspections(t.rows,t.startedAt);if(applied?.schema!==1)throw Error('Inspection publication unacknowledged');}
+  }else if(all){if(!same(current.state,finishSourceTraversal(t)))await cache.publishTraversal(task.snapshot,t);} 
   else {const applied=await cache.apply(t.rows);if(applied?.schema!==1)throw Error('Cache publication unacknowledged');}
   const published=(await cache.read()).state;
   if(repairGeneration){state.active=null;await save(store,SOURCE_COORDINATOR_KEY,state);return {requests,task:task.purpose,complete:true,generation:state.generation,consumerPromotion:false};}
@@ -137,6 +145,7 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
    }
    return w;
   });
+  if(task.purpose==='photo-conflict-recheck'){state.inspectionPhotoRecheckVersion='signed-cover-auth-v1';state.inspectionPhotoRecheckAt=t.startedAt;}
   if(task.purpose==='hourly')state.hourlyAt=t.startedAt;
   if(task.purpose==='pending'){
    const batches=sourceIdBatches(work.pendingInspectionIds),attempted=task.params.ids||[];

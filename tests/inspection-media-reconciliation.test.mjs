@@ -1,0 +1,51 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {applySourceRecords,applyObservedInspectionRecords,emptySourceCache,createSourceCache} from '../netlify/lib/hive-source-cache.mjs';
+import {runHiveSourceCoordinator} from '../netlify/lib/hive-source-coordinator.mjs';
+const at=Date.parse('2026-11-01T15:30:00Z');
+const data={id:'synthetic-1',updated_at:'2026-10-31T00:00:00Z',deleted:false,status:'confirmed',contacts:[],cover_photo_url:'https://example.invalid/photo.jpg?AWSAccessKeyId=unchanged&Signature=old&Expires=1'};
+const row={kind:'inspections',id:data.id,revision:Date.parse(data.updated_at)*1000,deleted:false,data};
+const fresh=()=>({...structuredClone(row),data:{...structuredClone(data),cover_photo_url:data.cover_photo_url.replace('Signature=old','Signature=new').replace('Expires=1','Expires=2')}});
+test('current GET reconciles only photo auth values; generic and safety differences stay held',()=>{
+ const base=applySourceRecords(emptySourceCache(),[row]),held=applySourceRecords(base,[fresh()]);
+ held.coverage={inspections:{complete:true,scope:'all',watermark:at-1000,historyComplete:false}};
+ const next=applyObservedInspectionRecords(held,[fresh()],at);
+ assert.deepEqual(next.conflicts,{});assert.deepEqual(next.coverage,held.coverage);
+ assert.equal(next.inspectionPhotoObservations[row.id].observedAt,at);
+ assert.equal(next.inspectionConflictDiagnostics[row.id].first.changedPaths[0],'/data/cover_photo_url');
+ assert.deepEqual(applyObservedInspectionRecords(next,[fresh()],at),next);
+ for(const mutate of [r=>r.data.status='canceled',r=>r.data.contacts=[{id:'other',role:'Customer'}],r=>r.deleted=true,r=>r.data.cover_photo_url=r.data.cover_photo_url.replace('unchanged','different'),r=>r.data.cover_photo_url=r.data.cover_photo_url.replace('photo.jpg','other.jpg'),r=>r.data.cover_photo_url+='&Expires=3']){
+  const unsafe=fresh();mutate(unsafe);assert.ok(applyObservedInspectionRecords(held,[unsafe],at).conflicts['inspections:'+row.id]);
+ }
+ assert.ok(applyObservedInspectionRecords(held,[],at).conflicts['inspections:'+row.id]);
+ const stale=fresh();stale.revision--;assert.ok(applyObservedInspectionRecords(held,[stale],at).conflicts['inspections:'+row.id]);
+ const unsafeHistory=fresh();unsafeHistory.data.status='canceled';
+ const knownUnsafe=applySourceRecords(base,[unsafeHistory]);
+ assert.ok(applyObservedInspectionRecords(knownUnsafe,[fresh()],at).conflicts['inspections:'+row.id]);
+ const unsafeMiddle=applySourceRecords(applySourceRecords(held,[unsafeHistory]),[fresh()]);
+ assert.equal(unsafeMiddle.inspectionConflictDiagnostics[row.id].semanticConflictSeen,true);
+ assert.ok(applyObservedInspectionRecords(unsafeMiddle,[fresh()],at).conflicts['inspections:'+row.id]);
+ const legacy=applySourceRecords(held,[unsafeHistory]);delete legacy.inspectionConflictDiagnostics[row.id].semanticConflictSeen;
+ const refused=applyObservedInspectionRecords(legacy,[fresh()],at);
+ assert.equal(refused.inspectionConflictDiagnostics[row.id].semanticConflictSeen,true);
+ assert.ok(applyObservedInspectionRecords(refused,[fresh()],at+1).conflicts['inspections:'+row.id]);
+ const encodedKey=fresh();encodedKey.data.cover_photo_url=encodedKey.data.cover_photo_url.replace('unchanged','%75nchanged');
+ assert.ok(applyObservedInspectionRecords(held,[encodedKey],at).conflicts['inspections:'+row.id]);
+});
+test('one exact-ID scheduled recheck preserves global coverage and does not loop',async()=>{
+ const values=new Map(),etags=new Map();let seq=0,calls=0,lastPath;
+ const store={getWithMetadata:async k=>values.has(k)?{data:structuredClone(values.get(k)),etag:etags.get(k)}:null,get:async k=>structuredClone(values.get(k)),setJSON:async(k,v,opts={})=>{if(opts.onlyIfNew&&values.has(k)||opts.onlyIfMatch&&opts.onlyIfMatch!==etags.get(k))return {modified:false};values.set(k,structuredClone(v));etags.set(k,String(++seq));return {modified:true};},delete:async k=>values.delete(k),list:async function*(){yield {blobs:[]};}};
+ const cache=createSourceCache({store,key:'cache'}),base=applySourceRecords(emptySourceCache(),[row]);
+ base.coverage={contacts:{complete:true,scope:'all',watermark:at,historyComplete:false},inspections:{complete:true,scope:'all',watermark:at,historyComplete:false}};
+ const held=applySourceRecords(base,[fresh()]);await store.setJSON('cache',held);
+ await store.setJSON('hive-source-coordinator/v1',{schema:1,active:null,hourlyAt:at,tagsAt:at,pendingAt:at,contactsAt:at,fullRolesAt:at});
+ const args={store,cache,enabled:true,now:()=>at,withLease:async(_,f)=>f({assertHeld:async()=>{}}),transport:{request:async path=>{calls++;lastPath=path;return {json:async()=>({data:[fresh().data],next_cursor:null,total:1})};}}};
+ const first=await runHiveSourceCoordinator(args);
+ assert.equal(first.task,'photo-conflict-recheck');assert.equal(calls,1);assert.match(lastPath,/ids=synthetic-1/);assert.match(lastPath,/include_canceled=true/);assert.doesNotMatch(lastPath,/scheduled_after|updated_since/);
+ assert.deepEqual((await cache.read()).state.coverage,base.coverage);assert.deepEqual((await cache.read()).state.conflicts,{});
+ await runHiveSourceCoordinator(args);assert.equal(calls,1);
+ await store.setJSON('cache',held);await store.setJSON('hive-source-coordinator/v1',{schema:1,active:null,hourlyAt:at,tagsAt:at,pendingAt:at,contactsAt:at,fullRolesAt:at});
+ args.transport.request=async()=>{calls++;return {json:async()=>({data:[],next_cursor:'unexpected-next',total:0})};};
+ const rejected=await runHiveSourceCoordinator(args);assert.equal(rejected.reason,'source-page-quarantined');
+ await runHiveSourceCoordinator(args);assert.equal(calls,2);assert.ok((await cache.read()).state.conflicts['inspections:'+row.id]);
+});

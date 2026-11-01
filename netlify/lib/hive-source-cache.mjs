@@ -1,4 +1,4 @@
-import {inspectionConflictDiagnostic} from './hive-source-conflict-diagnostics.mjs';
+import {inspectionConflictDiagnostic,isInspectionPhotoAuthOnly} from './hive-source-conflict-diagnostics.mjs';
 // Internal normalized cache only. No Hive endpoint/envelope/signature assumptions.
 // Adapters must prove revision ordering, complete pagination and source coverage.
 const kinds=new Set(['contacts','inspections']);
@@ -24,7 +24,7 @@ export function applySourceRecords(state,rows){
     next.inspectionConflictDiagnostics||={};
     if(Object.hasOwn(next.inspectionConflictDiagnostics,row.id)||Object.keys(next.inspectionConflictDiagnostics).length<100){
      const diagnostic=inspectionConflictDiagnostic(old,row),prior=next.inspectionConflictDiagnostics[row.id];
-     Object.defineProperty(next.inspectionConflictDiagnostics,row.id,{value:{first:prior?.first||diagnostic,latest:diagnostic},writable:true,enumerable:true,configurable:true});
+     Object.defineProperty(next.inspectionConflictDiagnostics,row.id,{value:{first:prior?.first||diagnostic,latest:diagnostic,semanticConflictSeen:prior?.semanticConflictSeen===true||!!prior&&[prior.first,prior.latest].some(d=>d?.revision!==row.revision||!isInspectionPhotoAuthOnly(d))||!isInspectionPhotoAuthOnly(diagnostic)},writable:true,enumerable:true,configurable:true});
     }
     else next.inspectionConflictDiagnosticsTruncated=true;
    }
@@ -103,6 +103,32 @@ export function finishObservedContactTraversal(t,observedAt){
  return {...result,contacts:observed.contacts,conflicts:observed.conflicts,contactObservations:observed.contactObservations};
 }
 
+// Only complete current provider GET observations may reconcile signed-photo
+// authentication values. Generic/event equality remains strict.
+export function applyObservedInspectionRecords(state,rows,observedAt){
+ if(!time(observedAt))throw Error('Invalid inspection observation time');
+ const base=clone(state);base.inspectionPhotoObservations||={};
+ for(const raw of rows){
+  const row=validate(raw);if(row.kind!=='inspections')throw Error('Inspection observation required');
+  const old=base.inspections[row.id],key='inspections:'+row.id;
+  if(!old||old.revision!==row.revision||Object.hasOwn(base.conflicts,key)&&base.conflicts[key]!==row.revision)continue;
+  const prior=base.inspectionConflictDiagnostics?.[row.id];
+  if(Object.hasOwn(base.conflicts,key)&&prior&&(prior.semanticConflictSeen===true||[prior.first,prior.latest].some(d=>d?.revision!==row.revision||!isInspectionPhotoAuthOnly(d))))continue;
+  const diagnostic=inspectionConflictDiagnostic(old,row);
+  if(!isInspectionPhotoAuthOnly(diagnostic,{requireExactSignatureExpiry:true}))continue;
+  if(base.inspectionPhotoObservations[row.id]?.observedAt>observedAt)throw Error('Inspection observation time regressed');
+  base.inspections[row.id]=row;
+  base.inspectionPhotoObservations[row.id]={rule:'signed-cover-auth-v1',observedAt,revision:row.revision,oldHash:diagnostic.oldHash,incomingHash:diagnostic.incomingHash,changedAuthKeys:diagnostic.coverPhotoComparison.changedAuthKeys};
+  delete base.conflicts[key];
+ }
+ return applySourceRecords(base,rows);
+}
+export function finishObservedInspectionTraversal(t,observedAt){
+ if(t.kind!=='inspections'||observedAt<t.startedAt)throw Error('Invalid inspection traversal observation');
+ const result=finishSourceTraversal(t),observed=applyObservedInspectionRecords(t.base,t.rows,observedAt);
+ return {...result,inspections:observed.inspections,conflicts:observed.conflicts,inspectionConflictDiagnostics:observed.inspectionConflictDiagnostics,inspectionPhotoObservations:observed.inspectionPhotoObservations};
+}
+
 export function createSourceCache({store,key='hive-source-cache/v1'}){
  const read=async()=>{const found=await store.getWithMetadata(key,{type:'json'});return {state:found?.data||emptySourceCache(),etag:found?.etag??null};};
  async function publish(snapshot,state){
@@ -110,7 +136,7 @@ export function createSourceCache({store,key='hive-source-cache/v1'}){
   if(result?.modified!==true)throw Error('Source cache changed; restart without advancing watermark');
   return state;
  }
- return {read,async applyObservedContacts(rows,observedAt){const snapshot=await read();return publish(snapshot,applyObservedContactRecords(snapshot.state,rows,observedAt));},async publishObservedContactTraversal(snapshot,traversal,observedAt){if(!equal(snapshot.state,traversal.base))throw Error('Traversal snapshot mismatch');return publish(snapshot,finishObservedContactTraversal(traversal,observedAt));},async apply(rows){const snapshot=await read();return publish(snapshot,applySourceRecords(snapshot.state,rows));},async publishTraversal(snapshot,traversal){
+ return {read,async applyObservedInspections(rows,observedAt){const snapshot=await read();return publish(snapshot,applyObservedInspectionRecords(snapshot.state,rows,observedAt));},async publishObservedInspectionTraversal(snapshot,traversal,observedAt){if(!equal(snapshot.state,traversal.base))throw Error('Traversal snapshot mismatch');return publish(snapshot,finishObservedInspectionTraversal(traversal,observedAt));},async applyObservedContacts(rows,observedAt){const snapshot=await read();return publish(snapshot,applyObservedContactRecords(snapshot.state,rows,observedAt));},async publishObservedContactTraversal(snapshot,traversal,observedAt){if(!equal(snapshot.state,traversal.base))throw Error('Traversal snapshot mismatch');return publish(snapshot,finishObservedContactTraversal(traversal,observedAt));},async apply(rows){const snapshot=await read();return publish(snapshot,applySourceRecords(snapshot.state,rows));},async publishTraversal(snapshot,traversal){
   if(!equal(snapshot.state,traversal.base))throw Error('Traversal snapshot mismatch');
   return publish(snapshot,finishSourceTraversal(traversal));
  }};

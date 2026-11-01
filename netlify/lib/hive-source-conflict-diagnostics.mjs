@@ -12,9 +12,14 @@ function mediaComparison(a,b){
    if(queryAt<0)return value;
    return head.slice(0,queryAt+1)+head.slice(queryAt+1).replace(/(^|&)(AWSAccessKeyId|Signature|Expires|X-Amz-Algorithm|X-Amz-Credential|X-Amz-Date|X-Amz-Expires|X-Amz-SignedHeaders|X-Amz-Signature|X-Amz-Security-Token)=[^&]*/g,'$1$2=[redacted]')+fragment;
   };
+  const redactSignatureExpiry=value=>{
+   const fragmentAt=value.indexOf('#'),head=fragmentAt<0?value:value.slice(0,fragmentAt),fragment=fragmentAt<0?'':value.slice(fragmentAt),queryAt=head.indexOf('?');
+   if(queryAt<0)return value;
+   return head.slice(0,queryAt+1)+head.slice(queryAt+1).replace(/(^|&)(Signature|Expires)=[^&]*/g,'$1$2=[redacted]')+fragment;
+  };
   const nonAuth=u=>[...u.searchParams].filter(([k])=>!authKeys.has(k)).sort((x,y)=>serialized(x).localeCompare(serialized(y)));
   const changedAuthKeys=[...authKeys].filter(k=>serialized(old.searchParams.getAll(k))!==serialized(incoming.searchParams.getAll(k)));
-  return {sameRawResourceWithAuthValuesRedacted:redactAuthValues(a)===redactAuthValues(b),sameOrigin:old.origin===incoming.origin,samePath:old.pathname===incoming.pathname,sameFragment:old.hash===incoming.hash,sameNonAuthQuery:serialized(nonAuth(old))===serialized(nonAuth(incoming)),sameUserInfo:old.username===incoming.username&&old.password===incoming.password,sameAuthParameterMultiplicity:[...authKeys].every(k=>old.searchParams.getAll(k).length===incoming.searchParams.getAll(k).length),changedAuthKeys};
+  return {sameRawResourceWithSignatureExpiryValuesRedacted:redactSignatureExpiry(a)===redactSignatureExpiry(b),sameRawResourceWithAuthValuesRedacted:redactAuthValues(a)===redactAuthValues(b),sameOrigin:old.origin===incoming.origin,samePath:old.pathname===incoming.pathname,sameFragment:old.hash===incoming.hash,sameNonAuthQuery:serialized(nonAuth(old))===serialized(nonAuth(incoming)),sameUserInfo:old.username===incoming.username&&old.password===incoming.password,sameAuthParameterMultiplicity:[...authKeys].every(k=>old.searchParams.getAll(k).length===incoming.searchParams.getAll(k).length),changedAuthKeys};
  }catch{return {parseable:false};}
 }
 // Private diagnostic evidence only: no raw records, values or signed URLs.
@@ -31,4 +36,12 @@ export function inspectionConflictDiagnostic(old,incoming){
  }
  walk(old,incoming,'');
  return {schema:1,revision:incoming.revision,oldHash:hash(old),incomingHash:hash(incoming),changedPaths:paths,pathsTruncated:truncated,coverPhotoComparison:mediaComparison(old.data?.cover_photo_url,incoming.data?.cover_photo_url)};
+}
+
+export function isInspectionPhotoAuthOnly(d,{requireExactSignatureExpiry=false}={}){
+ const c=d?.coverPhotoComparison;
+ return d?.schema===1&&d.pathsTruncated===false&&d.changedPaths?.length===1&&d.changedPaths[0]==='/data/cover_photo_url'&&
+  (!requireExactSignatureExpiry||c?.sameRawResourceWithSignatureExpiryValuesRedacted===true)&&c?.sameRawResourceWithSignatureExpiryValuesRedacted!==false&&
+  c?.sameRawResourceWithAuthValuesRedacted===true&&c.sameAuthParameterMultiplicity===true&&
+  c.changedAuthKeys?.length>0&&c.changedAuthKeys.every(k=>k==='Signature'||k==='Expires');
 }
