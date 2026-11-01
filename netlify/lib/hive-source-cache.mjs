@@ -1,3 +1,4 @@
+import {inspectionConflictDiagnostic} from './hive-source-conflict-diagnostics.mjs';
 // Internal normalized cache only. No Hive endpoint/envelope/signature assumptions.
 // Adapters must prove revision ordering, complete pagination and source coverage.
 const kinds=new Set(['contacts','inspections']);
@@ -17,8 +18,19 @@ export function applySourceRecords(state,rows){
  const next=clone(state);if(next.schema!==1)throw Error('Unsupported cache');
  for(const raw of rows){const row=validate(raw),old=Object.hasOwn(next[row.kind],row.id)?next[row.kind][row.id]:null,key=row.kind+':'+row.id;
   if(old&&row.revision<old.revision)continue;
-  if(old&&row.revision===old.revision){if(!equal(old,row))next.conflicts[key]=row.revision;continue;}
+  if(old&&row.revision===old.revision){if(!equal(old,row)){
+   next.conflicts[key]=row.revision;
+   if(row.kind==='inspections'){
+    next.inspectionConflictDiagnostics||={};
+    if(Object.hasOwn(next.inspectionConflictDiagnostics,row.id)||Object.keys(next.inspectionConflictDiagnostics).length<100){
+     const diagnostic=inspectionConflictDiagnostic(old,row),prior=next.inspectionConflictDiagnostics[row.id];
+     Object.defineProperty(next.inspectionConflictDiagnostics,row.id,{value:{first:prior?.first||diagnostic,latest:diagnostic},writable:true,enumerable:true,configurable:true});
+    }
+    else next.inspectionConflictDiagnosticsTruncated=true;
+   }
+  }continue;}
   Object.defineProperty(next[row.kind],row.id,{value:row,writable:true,enumerable:true,configurable:true});delete next.conflicts[key];
+  if(row.kind==='inspections'&&next.inspectionConflictDiagnostics)delete next.inspectionConflictDiagnostics[row.id];
  }
  return next;
 }

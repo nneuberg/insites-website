@@ -1,0 +1,33 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {applySourceRecords,emptySourceCache} from '../netlify/lib/hive-source-cache.mjs';
+
+test('same-revision diagnostic is deterministic, value-free and never clears conflict',()=>{
+ const row={kind:'inspections',id:'synthetic-1',revision:123,deleted:false,data:{id:'synthetic-1',status:'confirmed',cover_photo_url:'https://example.invalid/photo.jpg?AWSAccessKeyId=old-private-key&Signature=old-private-signature&Expires=1'}};
+ const base=applySourceRecords(emptySourceCache(),[row]);
+ const incoming=structuredClone(row);incoming.data.cover_photo_url='https://example.invalid/photo.jpg?AWSAccessKeyId=new-private-key&Signature=new-private-signature&Expires=2';
+ const result=applySourceRecords(base,[incoming]),d=result.inspectionConflictDiagnostics[row.id].latest;
+ assert.equal(result.conflicts['inspections:'+row.id],123);
+ assert.deepEqual(result.inspections[row.id],base.inspections[row.id]);
+ assert.deepEqual(d.changedPaths,['/data/cover_photo_url']);
+ assert.equal(d.coverPhotoComparison.samePath,true);
+ assert.equal(d.coverPhotoComparison.sameRawResourceWithAuthValuesRedacted,true);
+ assert.equal(d.coverPhotoComparison.sameAuthParameterMultiplicity,true);
+ assert.deepEqual(d.coverPhotoComparison.changedAuthKeys,['AWSAccessKeyId','Signature','Expires']);
+ assert.doesNotMatch(JSON.stringify(d),/private-key|private-signature|https:/);
+ assert.deepEqual(applySourceRecords(base,[incoming]),result);
+ incoming.data.status='canceled';
+ const changed=applySourceRecords(base,[incoming]);
+ assert.deepEqual(changed.inspectionConflictDiagnostics[row.id].latest.changedPaths,['/data/cover_photo_url','/data/status']);
+ assert.equal(changed.inspections[row.id].data.status,'confirmed');
+ assert.equal(changed.conflicts['inspections:'+row.id],123);
+ const repeated=applySourceRecords(result,[incoming]);
+ assert.deepEqual(repeated.inspectionConflictDiagnostics[row.id].first,d);
+ assert.deepEqual(repeated.inspectionConflictDiagnostics[row.id].latest.changedPaths,['/data/cover_photo_url','/data/status']);
+ incoming.revision=124;
+ assert.equal(applySourceRecords(repeated,[incoming]).inspectionConflictDiagnostics[row.id],undefined);
+ incoming.revision=123;incoming.data['x'.repeat(600)]='sensitive';
+ const oversized=applySourceRecords(base,[incoming]).inspectionConflictDiagnostics[row.id].latest;
+ assert.equal(oversized.pathsTruncated,true);
+ assert.ok(oversized.changedPaths.every(p=>Buffer.byteLength(p)<=512));
+});
