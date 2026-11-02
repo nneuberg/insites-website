@@ -4,7 +4,7 @@ import {queueLowRating,deliverLowRating} from './review-low-rating.mjs';
 import {inReviewScope,excludedRequest,roleCutoff} from './review-scope.mjs';
 import {createHash,randomBytes} from 'node:crypto';
 import {AUDIENCES,DAY,ORIGIN,eligibleRecipients,referralDates,dueStage,validToken} from './review-policy.mjs';
-export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.now(),hivePaused=false,hiveTransport=null,sourceContact=null}){
+export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.now(),hivePaused=false,hiveTransport=null,sourceContact=null,admission=null}){
  const inLaunchScope=row=>inReviewScope(row,env);
  const projectionPaused=env.REVIEW_PROJECTION_PAUSED==='true';
  const hash=s=>createHash('sha256').update(s).digest('hex');
@@ -53,6 +53,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  async function finish(row){
   // Test feedback is stored locally but must never change real audience tags.
   if(row.isTest){row.finishSynced=true;await save(row);return;}
+  if(admission)await admission.stop(row);
   if(projectionPaused||env.REVIEW_ENABLED!=='true')return;
   await mc(row,{merge_fields:{RVPEND:'ENDED',...(row.ratedAt?{RVFEED:'YES'}:{}),...(row.googleReviewedAt?{RVGDONE:'YES'}:{})}});
   // Review launch must not enroll clients into unrelated referral journeys.
@@ -93,6 +94,13 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  }
  async function send(row,stage){
   if(projectionPaused)return;
+  if(admission){
+   const result=await admission.stage(row,stage);
+   if(result.held){row.deliveryHold={reason:result.reason,at:now()};delete row.preparingStage;await save(row);return;}
+   row.admissionOwned=true;
+   if(result.sent){row.sentStages=[...new Set([...row.sentStages,stage])];row.lastStageQueuedAt=result.sentAt;delete row.preparingStage;delete row.stagePrepared;}else if(result.queued){row.preparingStage=stage;}
+   await save(row);return;
+  }
   const member=await mc(row,undefined,'GET');
   if(member.merge_fields?.RVGDONE==='YES'||member.tags?.some(t=>t.name==='google reviewed')){row.googleReviewedAt=now();row.endedAt=now();await save(row);await finish(row);return;}
   if(member.status!=='subscribed'){row.endedAt=now();row.suppressed=true;row.finishSynced=true;await save(row);return;}
@@ -119,6 +127,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   row.sentStages=[...new Set([...row.sentStages,...Array.from({length:stage+1},(_,n)=>n)])];delete row.preparingStage;delete row.stagePrepared;await save(row);
  }
  async function enroll(inspection){
+  if(env.REVIEW_NEW_INTAKE_ENABLED==='false')return {paused:true,intakeHeld:true};
   if(env.REVIEW_INTAKE_START_AFTER!==undefined&&!allowsReviewIntake(inspection,env.REVIEW_INTAKE_START_AFTER))return {added:0,intakeHeld:true};
   const cutoff=Date.parse(env.REVIEW_START_AFTER||'');
   if(projectionPaused||!Number.isFinite(cutoff)||env.REVIEW_ENABLED!=='true')return {paused:true};
@@ -205,7 +214,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  async function run({discover=true}={}){
   if(projectionPaused||env.REVIEW_ENABLED!=='true'||!Number.isFinite(Date.parse(env.REVIEW_START_AFTER||'')))return {paused:true};
   let read=0,discoveryDeferred=false;
-  if(discover){
+  if(discover&&env.REVIEW_NEW_INTAKE_ENABLED!=='false'){
   try{
   let cursor=(await store.get('scan',{type:'json'}))?.cursor;
   // Bound each run below provider limits; cursor resumes on the following run.
@@ -225,12 +234,12 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
     if(!needsLegacyHold(row)&&row.lowRatingAlert?.state!=='pending'&&(row.finishSynced&&(!row.googleReviewedAt||row.hiveTagSynced)||!row.endedAt&&now()<row.expiresAt&&dueStage(row,now())===null))continue;
     // Already-finished rows waiting only on Hive must not consume the send budget.
     if((hivePaused||env.REVIEW_HIVE_TAG_WRITES_ENABLED==='false')&&row.endedAt&&row.finishSynced&&row.googleReviewedAt&&!row.hiveTagSynced&&row.lowRatingAlert?.state!=='pending'){hiveDeferred++;continue;}
-    if(processed>=20)return {read,processed,discoveryDeferred,hiveDeferred};
+    if(processed>=(admission?2:20))return {read,processed,discoveryDeferred,hiveDeferred,newIntakeHeld:env.REVIEW_NEW_INTAKE_ENABLED==='false'};
     try{await process(token);}catch(error){if(!hiveUnavailable(error))throw error;hiveDeferred++;}
     processed++;
    }
   }
-  return {read,processed,discoveryDeferred,hiveDeferred};
+  return {read,processed,discoveryDeferred,hiveDeferred,newIntakeHeld:env.REVIEW_NEW_INTAKE_ENABLED==='false'};
  }
  return {get,save,hive,mc,locked,enroll,process,feedback,confirmGoogle,run};
 }

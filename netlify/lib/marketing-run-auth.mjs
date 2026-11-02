@@ -1,0 +1,3 @@
+import {createHmac,timingSafeEqual} from 'node:crypto';
+export function signMarketingRun(secret,timestamp,body='{}'){if(!secret)throw Error('Existing ledger secret unavailable');return createHmac('sha256',secret).update('marketing-run-v1\0'+timestamp+'.'+body).digest('hex');}
+export function verifyMarketingRun(request,body,secret,now=Date.now()){const ts=request.headers.get('x-marketing-time'),sig=request.headers.get('x-marketing-signature');if(body!=='{}'||!/^\d{13}$/.test(ts||'')||Math.abs(Number(ts)-now)>300000||!/^[a-f0-9]{64}$/.test(sig||''))return false;const expected=signMarketingRun(secret,ts,body);return timingSafeEqual(Buffer.from(sig),Buffer.from(expected));}

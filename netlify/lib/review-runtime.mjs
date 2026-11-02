@@ -1,3 +1,6 @@
+import {MARKETING_ADMISSION} from './marketing-admission-config.mjs';
+import {createAdmissionClient} from './marketing-admission-client.mjs';
+import {createReviewAdmission} from './marketing-review-adapter.mjs';
 import {HIVE_INCIDENT} from './hive-incident.mjs';
 import {sourceTransport,sourceServices} from './hive-source-runtime.mjs';
 import {SOURCE_PLAN} from './hive-source-sync.mjs';
@@ -10,5 +13,5 @@ export function reviewStore(functionContext){
  const name=context==='production'?'insites-review-campaign':'insites-review-campaign-'+(functionContext?.deploy?.id||process.env.DEPLOY_ID||'local');
  return getStore({name,consistency:'strong'});
 }
-export function runtime(functionContext){return createEngine({store:reviewStore(functionContext),env:reviewEnvironment(),hivePaused:HIVE_INCIDENT.paused||!SOURCE_PLAN.reviewEnrollmentEnabled,hiveTransport:sourceTransport(functionContext),sourceContact:SOURCE_PLAN.enabled?sourceServices(functionContext).view.getContact:null});}
+export function runtime(functionContext){return createEngine({admission:MARKETING_ADMISSION.reviewOwnerEnabled?createReviewAdmission({config:MARKETING_ADMISSION,client:createAdmissionClient()}):null,store:reviewStore(functionContext),env:reviewEnvironment(),hivePaused:HIVE_INCIDENT.paused||!SOURCE_PLAN.reviewEnrollmentEnabled,hiveTransport:sourceTransport(functionContext),sourceContact:SOURCE_PLAN.enabled?sourceServices(functionContext).view.getContact:null});}
 export const response=(body,status=200)=>Response.json(body,{status,headers:{'Cache-Control':'no-store','X-Robots-Tag':'noindex, nofollow','Referrer-Policy':'no-referrer'}});

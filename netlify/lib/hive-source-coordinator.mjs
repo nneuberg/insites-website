@@ -1,4 +1,4 @@
-import {beginSourceTraversal,appendSourcePage,finishSourceTraversal,finishObservedContactTraversal,finishObservedInspectionTraversal} from './hive-source-cache.mjs';
+import {beginSourceTraversal,appendSourcePage,finishSourceTraversal,finishObservedContactTraversal,finishObservedInspectionTraversal,findNewCustomerBooking} from './hive-source-cache.mjs';
 import {sourceListPath,sourceIdBatches,normalizeListRecord,SOURCE_PLAN} from './hive-source-sync.mjs';
 import {runHiveSourceEventWorker,SOURCE_COORDINATOR_LEASE,SOURCE_WORK_KEY} from './hive-source-event-worker.mjs';
 export const SOURCE_COORDINATOR_KEY='hive-source-coordinator/v1';
@@ -29,7 +29,7 @@ function terminalInspection(row,at){
 function contactIds(record){if(!Array.isArray(record?.contacts)||record.contacts.some(c=>typeof c?.id!=='string'))return null;return record.contacts.map(c=>c.id);}
 // One lease and at most ONE provider request per tick. No send/eligibility action.
 // All callers must share company-scoped strong-consistency storage and transport.
-export async function runHiveSourceCoordinator({store,cache,transport,withLease,enabled=false,repairGeneration=false,now=()=>Date.now(),historyComplete=false,contactDeletionRecoveryVerified=false}={}){
+export async function runHiveSourceCoordinator({store,cache,transport,withLease,enabled=false,repairGeneration=false,now=()=>Date.now(),historyComplete=false,contactDeletionRecoveryVerified=false,customerRoleObservationEnabled=SOURCE_PLAN.customerRoleObservationEnabled}={}){
  if(enabled!==true)return {deferred:true,requests:0};
  if(typeof withLease!=='function'||typeof transport?.request!=='function')throw Error('Shared lease and quota transport required');
  return withLease(SOURCE_COORDINATOR_LEASE,async(lease)=>{
@@ -65,6 +65,17 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
    state.active={kind,purpose,params,snapshot:snap,traversal:beginSourceTraversal(snap.state,{kind,mode,startedAt:now(),scope,historyComplete:kind==='inspections'&&scope==='all'&&historyComplete,overlapMs:SOURCE_PLAN.overlapMs})};
    await save(store,SOURCE_COORDINATOR_KEY,state);
   }
+  async function customerRoleContext(){
+   if(customerRoleObservationEnabled!==true)return null;
+   const w=(await store.getWithMetadata(SOURCE_WORK_KEY,{type:'json'}))?.data;
+   if(w?.schema!==1||!Array.isArray(w.invalidatedInspectionIds)||typeof w.roleMappingUnknown!=='boolean')return null;
+   let pendingEventsClear=true;
+   for await(const page of store.list({prefix:'hive-source-events/pending/',paginate:true})){
+    if(!Array.isArray(page?.blobs))return null;
+    if(page.blobs.length){pendingEventsClear=false;break;}
+   }
+   return {enabled:true,pendingEventsClear,roleMappingUnknown:w.roleMappingUnknown,invalidatedInspectionIds:[...w.invalidatedInspectionIds]};
+  }
   if(!state.active){
    // Existing incomplete baseline is resumed, never restarted on every tick.
    for(const kind of ['contacts','inspections'])if(!snap.state.coverage[kind]?.complete&&(!snap.state.coverage[kind]||now()-snap.state.coverage[kind].watermark>=DAY)){await start(kind,'baseline',{},'all');break;}
@@ -73,6 +84,13 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
    const conflictIds=Object.keys(snap.state.conflicts).filter(k=>k.startsWith('inspections:')).map(k=>k.slice(12)).sort();
    if(!state.active&&!repairGeneration&&state.inspectionPhotoRecheckVersion!=='signed-cover-auth-v1'&&conflictIds.length&&conflictIds.length<=200)
     await start('inspections','photo-conflict-recheck',{ids:conflictIds});
+   // Exactly one positively corroborated first-customer conflict may receive
+   // one current-ID recheck. This is not a general role or identity repair.
+   const contactConflictIds=Object.keys(snap.state.conflicts).filter(k=>k.startsWith('contacts:')).map(k=>k.slice(9));
+   if(!state.active&&!repairGeneration&&customerRoleObservationEnabled===true&&state.customerRoleRecheckVersion!=='first-customer-booking-v1'&&contactConflictIds.length===1){
+    const context=await customerRoleContext(),id=contactConflictIds[0];
+    if(findNewCustomerBooking(snap.state,snap.state.contacts[id],now(),context))await start('contacts','customer-role-recheck',{ids:[id]});
+   }
    const pendingBatches=sourceIdBatches(work.pendingInspectionIds);
    if(!state.active&&work.globalRoleDirty&&pendingBatches.length&&now()-state.pendingAt>=HOUR)await start('inspections','pending',{ids:pendingBatches[(state.pendingOffset||0)%pendingBatches.length]});
    if(!state.active&&work.refreshContactIds.length&&now()-(state.contactsAt||0)>=HOUR)await start('contacts','contacts',{ids:sourceIdBatches(work.refreshContactIds)[(state.contactsOffset||0)%sourceIdBatches(work.refreshContactIds).length]});
@@ -88,7 +106,7 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
   const task=state.active;let requests=0;
   if(!task.traversal.done){
    let pageSummary=null;const t=task.traversal,params={...task.params,cursor:t.nextCursor,...(task.purpose==='delta'?{since:t.since}:{})};
-   try{const response=await transport.request(sourceListPath(task.kind,params));requests=1;const page=await response.json();pageSummary={rows:Array.isArray(page?.data)?page.data.length:null,total:Number.isSafeInteger(page?.total)?page.total:null,cursorKind:page?.next_cursor===null?'null':typeof page?.next_cursor};if(task.purpose==='photo-conflict-recheck'&&(!Array.isArray(page.data)||page.next_cursor!==null||page.total!==page.data.length||page.data.length>task.params.ids.length||page.data.some(r=>!task.params.ids.includes(r?.id))))throw Error('Unexpected inspection identity');task.traversal=appendSourcePage(t,{cursor:t.nextCursor,rows:page.data.map(r=>normalizeListRecord(task.kind,r)),nextCursor:page.next_cursor,total:page.total});await save(store,SOURCE_COORDINATOR_KEY,state);}
+   try{const response=await transport.request(sourceListPath(task.kind,params));requests=1;const page=await response.json();pageSummary={rows:Array.isArray(page?.data)?page.data.length:null,total:Number.isSafeInteger(page?.total)?page.total:null,cursorKind:page?.next_cursor===null?'null':typeof page?.next_cursor};if(['photo-conflict-recheck','customer-role-recheck'].includes(task.purpose)&&(!Array.isArray(page.data)||page.next_cursor!==null||page.total!==page.data.length||page.data.length>task.params.ids.length||page.data.some(r=>!task.params.ids.includes(r?.id))))throw Error('Unexpected inspection identity');task.traversal=appendSourcePage(t,{cursor:t.nextCursor,rows:page.data.map(r=>normalizeListRecord(task.kind,r)),nextCursor:page.next_cursor,total:page.total});await save(store,SOURCE_COORDINATOR_KEY,state);}
    catch(error){if(error.code==='HIVE_TRANSPORT_DEFERRED')return deferred(error);if(requests===1){const safeReasons=['Unexpected inspection identity','Incomplete or inconsistent pagination','Duplicate or wrong source identities','Pagination cycle','Incomplete coverage','Incomplete source record','Incomplete contact authority','Incomplete contact tags or roles','Missing source revision','Invalid source calendar time','Invalid source revision','Invalid normalized source record','Invalid normalized email identities'];state.quarantined=true;state.validationFailure={at:now(),kind:task.kind,purpose:task.purpose,page:pageSummary,pages:task.traversal.pages,rows:task.traversal.rows.length,total:task.traversal.total,reason:safeReasons.includes(error.message)?error.message:'source-page-invalid'};await save(store,SOURCE_COORDINATOR_KEY,state);return {deferred:true,reason:'source-page-quarantined',requests:1,validation:state.validationFailure};}throw error;}
   }
   const t=task.traversal;if(!t.done)return {requests,task:task.purpose,complete:false};
@@ -100,7 +118,7 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
    // Persist once so publication retry remains idempotent.
    if(!task.observedAt){task.observedAt=t.startedAt;await save(store,SOURCE_COORDINATOR_KEY,state);}
    if(all){if(!same(current.state,finishObservedContactTraversal(t,task.observedAt)))await cache.publishObservedContactTraversal(task.snapshot,t,task.observedAt);}
-   else {const applied=await cache.applyObservedContacts(t.rows,task.observedAt);if(applied?.schema!==1)throw Error('Cache publication unacknowledged');}
+   else {const applied=await cache.applyObservedContacts(t.rows,task.observedAt,await customerRoleContext());if(applied?.schema!==1)throw Error('Cache publication unacknowledged');}
   }else if(task.kind==='inspections'&&!repairGeneration){
    if(all){if(!same(current.state,finishObservedInspectionTraversal(t,t.startedAt)))await cache.publishObservedInspectionTraversal(task.snapshot,t,t.startedAt);}
    else {const applied=await cache.applyObservedInspections(t.rows,t.startedAt);if(applied?.schema!==1)throw Error('Inspection publication unacknowledged');}
@@ -145,6 +163,7 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
    }
    return w;
   });
+  if(task.purpose==='customer-role-recheck'){state.customerRoleRecheckVersion='first-customer-booking-v1';state.customerRoleRecheckAt=t.startedAt;}
   if(task.purpose==='photo-conflict-recheck'){state.inspectionPhotoRecheckVersion='signed-cover-auth-v1';state.inspectionPhotoRecheckAt=t.startedAt;}
   if(task.purpose==='hourly')state.hourlyAt=t.startedAt;
   if(task.purpose==='pending'){

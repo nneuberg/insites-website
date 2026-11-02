@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {inspectionConflictDiagnostic,isInspectionPhotoAuthOnly} from './hive-source-conflict-diagnostics.mjs';
 // Internal normalized cache only. No Hive endpoint/envelope/signature assumptions.
 // Adapters must prove revision ordering, complete pagination and source coverage.
@@ -7,6 +8,7 @@ const text=x=>typeof x==='string'&&x.trim()!=='';
 const time=x=>Number.isSafeInteger(x)&&x>=0;
 const canonical=x=>Array.isArray(x)?x.map(canonical):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,canonical(x[k])])):x;
 const equal=(a,b)=>JSON.stringify(canonical(a))===JSON.stringify(canonical(b));
+const fingerprint=x=>createHash('sha256').update(JSON.stringify(canonical(x))).digest('hex');
 export const normalizeSourceEmail=value=>typeof value==='string'?value.trim().toLowerCase():'';
 export function emptySourceCache(){return {schema:1,contacts:{},inspections:{},coverage:{},conflicts:{}};}
 function validate(row){
@@ -73,13 +75,44 @@ export function finishSourceTraversal(t){
 // Only a completed, current provider GET may use this path. Signed events and
 // generic cache writes remain strictly revision-ordered. Never repair identities,
 // roles, deletions or an already-quarantined unknown conflict at equal revision.
-export function applyObservedContactRecords(state,rows,observedAt){
+export function findNewCustomerBooking(state,contactRow,observedAt,context){
+ if(context?.enabled!==true||context.pendingEventsClear!==true||context.roleMappingUnknown!==false||!Array.isArray(context.invalidatedInspectionIds)||!time(observedAt))return null;
+ if(contactRow?.deleted||contactRow?.data?.emailIdentityHeld||!contactRow?.data?.email||contactRow.data.roles?.length!==0)return null;
+ try{assertSourceAuthority(state,'inspections',{now:observedAt,maxAgeMs:86400000});}catch{return null;}
+ for(const row of Object.values(state.inspections)){
+  const i=row.data,created=Date.parse(i?.created_at||'');
+  // Date.parse truncates sub-ms precision. Multiplication compares like units
+  // conservatively: an ambiguous same-millisecond creation cannot qualify.
+  if(row.deleted||i?.deleted!==false||i.status!=='confirmed'||i.confirmed!==true||i.canceled_at!==null||context.invalidatedInspectionIds.includes(row.id)||!Number.isSafeInteger(created)||created>observedAt||created*1000<=contactRow.revision)continue;
+  const links=i.contacts?.filter(c=>c.id===contactRow.id)||[];
+  if(links.length!==1)continue;
+  const c=links[0];
+  if(c.role==='Customer'&&normalizeSourceEmail(c.email)===contactRow.data.email&&(c.first_name??null)===contactRow.data.first_name&&(c.last_name??null)===contactRow.data.last_name)
+   return {inspectionId:row.id,inspectionRevision:row.revision,createdAt:i.created_at,linkFingerprint:fingerprint(c)};
+ }
+ return null;
+}
+
+export function applyObservedContactRecords(state,rows,observedAt,customerRoleContext=null){
  if(!time(observedAt))throw Error('Invalid observation time');
  const base=clone(state);base.contactObservations||={};
  for(const raw of rows){
   const row=validate(raw);if(row.kind!=='contacts')throw Error('Contact observation required');
   const old=base.contacts[row.id],key='contacts:'+row.id;
-  if(!old||old.revision!==row.revision||Object.hasOwn(base.conflicts,key))continue;
+  if(!old||old.revision!==row.revision)continue;
+  // Narrow first-booking transition only. Names/email/deletion and every other
+  // normalized identity field must match; tags come from this complete GET.
+  if(row.data.roles?.length===1&&row.data.roles[0]==='Customer'&&Array.isArray(row.data.tags)){
+   const withoutDerived=r=>{const copy=clone(r);delete copy.data.roles;delete copy.data.tags;return copy;};
+   const booking=equal(withoutDerived(old),withoutDerived(row))?findNewCustomerBooking(base,old,observedAt,customerRoleContext):null;
+   if(booking&&(!Object.hasOwn(base.conflicts,key)||base.conflicts[key]===row.revision)){
+    if(base.contactObservations[row.id]?.observedAt>observedAt)throw Error('Observation time regressed');
+    base.customerRoleObservations||={};
+    base.customerRoleObservations[row.id]={rule:'first-customer-booking-v1',observedAt,revision:row.revision,oldHash:fingerprint(old),incomingHash:fingerprint(row),addedRoles:['Customer'],...booking};
+    base.contacts[row.id]=row;delete base.conflicts[key];continue;
+   }
+  }
+  if(Object.hasOwn(base.conflicts,key))continue;
   const withoutTags=r=>{const copy=clone(r);delete copy.data.tags;return copy;};
   if(!Array.isArray(row.data.tags)||!Array.isArray(old.data.tags)||!equal(withoutTags(old),withoutTags(row)))continue;
   if(!equal(old.data.tags,row.data.tags)){
@@ -136,7 +169,7 @@ export function createSourceCache({store,key='hive-source-cache/v1'}){
   if(result?.modified!==true)throw Error('Source cache changed; restart without advancing watermark');
   return state;
  }
- return {read,async applyObservedInspections(rows,observedAt){const snapshot=await read();return publish(snapshot,applyObservedInspectionRecords(snapshot.state,rows,observedAt));},async publishObservedInspectionTraversal(snapshot,traversal,observedAt){if(!equal(snapshot.state,traversal.base))throw Error('Traversal snapshot mismatch');return publish(snapshot,finishObservedInspectionTraversal(traversal,observedAt));},async applyObservedContacts(rows,observedAt){const snapshot=await read();return publish(snapshot,applyObservedContactRecords(snapshot.state,rows,observedAt));},async publishObservedContactTraversal(snapshot,traversal,observedAt){if(!equal(snapshot.state,traversal.base))throw Error('Traversal snapshot mismatch');return publish(snapshot,finishObservedContactTraversal(traversal,observedAt));},async apply(rows){const snapshot=await read();return publish(snapshot,applySourceRecords(snapshot.state,rows));},async publishTraversal(snapshot,traversal){
+ return {read,async applyObservedInspections(rows,observedAt){const snapshot=await read();return publish(snapshot,applyObservedInspectionRecords(snapshot.state,rows,observedAt));},async publishObservedInspectionTraversal(snapshot,traversal,observedAt){if(!equal(snapshot.state,traversal.base))throw Error('Traversal snapshot mismatch');return publish(snapshot,finishObservedInspectionTraversal(traversal,observedAt));},async applyObservedContacts(rows,observedAt,customerRoleContext=null){const snapshot=await read();return publish(snapshot,applyObservedContactRecords(snapshot.state,rows,observedAt,customerRoleContext));},async publishObservedContactTraversal(snapshot,traversal,observedAt){if(!equal(snapshot.state,traversal.base))throw Error('Traversal snapshot mismatch');return publish(snapshot,finishObservedContactTraversal(traversal,observedAt));},async apply(rows){const snapshot=await read();return publish(snapshot,applySourceRecords(snapshot.state,rows));},async publishTraversal(snapshot,traversal){
   if(!equal(snapshot.state,traversal.base))throw Error('Traversal snapshot mismatch');
   return publish(snapshot,finishSourceTraversal(traversal));
  }};

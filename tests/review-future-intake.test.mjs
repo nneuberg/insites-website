@@ -6,10 +6,20 @@ import {inReviewScope} from '../netlify/lib/review-scope.mjs';
 import {REVIEW_INTAKE_START_AFTER,allowsReviewIntake} from '../netlify/lib/review-intake.mjs';
 import {runCachedReviewWorker} from '../netlify/lib/hive-source-review.mjs';
 
+test('overnight intake hold blocks enrollment and discovery but preserves existing follow-up processing',async()=>{
+ const now=Date.parse('2026-11-02T05:00:00Z'),entries=new Map();let seq=0,calls=0;
+ const store={async *list({prefix}){yield {blobs:[...entries.keys()].filter(k=>k.startsWith(prefix)).map(key=>({key}))};},async get(k){return structuredClone(entries.get(k)?.data??null);},async getWithMetadata(k){return structuredClone(entries.get(k)??null);},async setJSON(k,data,o={}){const old=entries.get(k);if(o.onlyIfNew&&old||o.onlyIfMatch&&old?.etag!==o.onlyIfMatch)return {modified:false};entries.set(k,{data:structuredClone(data),etag:String(++seq)});return {modified:true};}};
+ const env=reviewEnvironment({MAILCHIMP_API_KEY:'mock-us5'});assert.equal(env.REVIEW_NEW_INTAKE_ENABLED,'false');assert.equal(env.REVIEW_ENABLED,'true');assert.equal(env.REVIEW_PROJECTION_PAUSED,'false');assert.equal(env.REVIEW_HIVE_TAG_WRITES_ENABLED,'false');assert.equal(env.REVIEW_REFERRALS_ENABLED,'false');
+ const engine=createEngine({store,env,now:()=>now,sourceContact:async()=>{calls++;throw Error('No new intake reads');},fetcher:async()=>{calls++;throw Error('No test sends');}});
+ assert.deepEqual(await engine.enroll({id:'synthetic-future-job'}),{paused:true,intakeHeld:true});assert.equal(entries.size,0);
+ const legacy={role:'Customer',inspectionEndedAt:Date.parse('2026-10-28T12:00:00Z'),createdAt:Date.parse('2026-10-28T13:00:00Z'),token:'f'.repeat(48),sentStages:[0],expiresAt:now+86400000};await engine.save(legacy);
+ const result=await engine.run();assert.equal(result.newIntakeHeld,true);assert.equal(result.read,0);assert.equal(result.processed,1);assert.equal(calls,0);assert.equal((await engine.get(legacy.token)).legacyNotBefore,now+7*86400000);assert.deepEqual((await engine.get(legacy.token)).sentStages,[0]);
+});
+
 test('future-only admission excludes old inspections without changing existing review scope or receipts',async()=>{
  const cutoff=Date.parse(REVIEW_INTAKE_START_AFTER),now=cutoff+60000,entries=new Map(),calls=[];let seq=0;
  const store={async *list({prefix}){yield {blobs:[...entries.keys()].filter(k=>k.startsWith(prefix)).map(key=>({key}))};},async get(k){return structuredClone(entries.get(k)?.data??null);},async getWithMetadata(k){return structuredClone(entries.get(k)??null);},async setJSON(k,data,o={}){const old=entries.get(k);if(o.onlyIfNew&&old||o.onlyIfMatch&&old?.etag!==o.onlyIfMatch)return {modified:false};entries.set(k,{data:structuredClone(data),etag:String(++seq)});return {modified:true};}};
- const env=reviewEnvironment({MAILCHIMP_API_KEY:'mock-us5'});
+ const env={...reviewEnvironment({MAILCHIMP_API_KEY:'mock-us5'}),REVIEW_NEW_INTAKE_ENABLED:'true'};
  const engine=createEngine({store,env,now:()=>now,sourceContact:async()=>{calls.push('contact');return {roles:[],tags:[]};},fetcher:async()=>{calls.push('mailchimp');return Response.json({status:'subscribed',merge_fields:{},tags:[]});}});
  const base={id:'future-job',confirmed:true,ends_at:new Date(cutoff).toISOString(),price:{paid:true,amount_due:0},agreements:{all_signed:true},reports:{status:'published'},address:{full:'Synthetic address'},contacts:[{id:'person',role:'Customer',first_name:'Test',email:'test@example.com'}]};
  const old={...base,id:'old-job',ends_at:new Date(cutoff-1).toISOString()};
