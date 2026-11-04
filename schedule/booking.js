@@ -14,6 +14,7 @@ function update() {
   for (const service of catalog.services.filter(service => service.priceCents === null)) {
     const input = form.querySelector(`input[value="${service.id}"]`);
     const unavailable = (service.id === 'exterior' && selectedIds('media_service').includes('photography'));
+    if (!input) continue; // Catalog-only add-ons have no booking control.
     input.disabled = unavailable;
     if (unavailable) input.checked = false;
   }
@@ -74,7 +75,9 @@ try {
   catalog = await response.json();
   if (!Array.isArray(catalog.services) || !catalog.services.every(service=>(service.priceCents === null ? Number.isSafeInteger(service.addonPriceCents) && service.addonPriceCents >= 0 : Number.isSafeInteger(service.priceCents) && service.priceCents >= 0) && Array.isArray(service.addons) && service.addons.every(addon=>Number.isSafeInteger(addon.priceCents) && addon.priceCents>=0))) throw new Error('Invalid prices');
   for (const service of catalog.services) {
-    form.querySelector(`[data-fee="${service.id}"]`).textContent=service.priceCents === null ? '—' : money(service.priceCents);
+    const fee = form.querySelector(`[data-fee="${service.id}"]`);
+    if (!fee) continue; // Keep catalog-only offers off the booking form.
+    fee.textContent=service.priceCents === null ? '—' : money(service.priceCents);
     const ids={basic:'basic-aerial',elevated:'elevated-aerial'};
     const offers=catalog.services.flatMap(parent=>parent.addons.filter(addon=>(ids[addon.id]||addon.id)===service.id).map(addon=>addon.priceCents));
     form.querySelector(`[data-addon-fee="${service.id}"]`).textContent=service.addonPriceCents !== undefined ? money(service.addonPriceCents) : offers.length ? money(Math.min(...offers)) : '—';
