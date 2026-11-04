@@ -1,6 +1,13 @@
 // OFF activation gates; inert graph mappings are not a cutover.
 export const MARKETING_ADMISSION=Object.freeze({
   "enabled": false,
+  "referralOwnerEnabled": false,
+  "referralRatingProjection": {"enabled":false,"interestId":null,"nativeGuardVerified":false,"exclusiveWriterVerified":false},
+  "reviewReferralPolicy": {
+    "enabled": false,
+    "version": "review-037-referral-2-v1",
+    "referralRatingPolicy": "referral-positive-rating-v1"
+  },
   "appsScriptOwnerEnabled": false,
   "terminalCallbackEnabled": false,
   "producerEnabled": false,
@@ -1266,6 +1273,104 @@ export const MARKETING_ADMISSION=Object.freeze({
       },
       "terminalMarkerCategoryId": "d05af3797e",
       "nativeGraphVerified": true
+    },
+    "referral-customer-v1:initial-reviewed": {
+      "audienceId": "8f8749ba24",
+      "campaignId": "f2788ba47b",
+      "journeyId": "9564",
+      "triggerStepId": "78641",
+      "graphVersion": "adm1-j9564",
+      "sourceCampaignId": "19a5d9303d",
+      "verified": true,
+      "nativePositiveRatingGuardVerified": false,
+      "positiveRatingInterest": null,
+      "reentry": false,
+      "emailCount": 1,
+      "noAutonomousTails": true,
+      "cleanGeneration": true,
+      "nativeReplyScopeVerified": true,
+      "terminalMarkersExclusive": false,
+      "replyCampaignIds": [
+        "19a5d9303d",
+        "31bf2e94f1",
+        "6a3d35ad7a",
+        "ce77df3e53",
+        "f2788ba47b",
+        "bd67d11ef8",
+        "26f1192525",
+        "75582fc776",
+        "e58d892f7f",
+        "e63a17d43f"
+      ],
+      "terminalMarkers": {
+        "stop": "db04a69acc"
+      },
+      "terminalMarkerCategoryId": "d05af3797e",
+      "nativeGraphVerified": true,
+      "nativeVariantGuardVerified": true,
+      "provisionalPrivateFeedbackHold": true,
+      "apiContentVerified": true,
+      "staticTerminalBindingVerified": true,
+      "knownAgentExclusionTags": [
+        "1st time buying agent",
+        "absent buying agent",
+        "absent selling agent",
+        "no business",
+        "realtor",
+        "repeat buying agent",
+        "super buying agent",
+        "vip buying agent"
+      ],
+      "verifiedAt": "2026-11-03T15:27:45Z"
+    },
+    "referral-customer-v1:initial-unreviewed": {
+      "audienceId": "8f8749ba24",
+      "campaignId": "bd67d11ef8",
+      "journeyId": "9565",
+      "triggerStepId": "78643",
+      "graphVersion": "adm1-j9565",
+      "sourceCampaignId": "19a5d9303d",
+      "verified": true,
+      "nativePositiveRatingGuardVerified": false,
+      "positiveRatingInterest": null,
+      "reentry": false,
+      "emailCount": 1,
+      "noAutonomousTails": true,
+      "cleanGeneration": true,
+      "nativeReplyScopeVerified": true,
+      "terminalMarkersExclusive": false,
+      "replyCampaignIds": [
+        "19a5d9303d",
+        "31bf2e94f1",
+        "6a3d35ad7a",
+        "ce77df3e53",
+        "f2788ba47b",
+        "bd67d11ef8",
+        "26f1192525",
+        "75582fc776",
+        "e58d892f7f",
+        "e63a17d43f"
+      ],
+      "terminalMarkers": {
+        "stop": "be3bbf5c0e"
+      },
+      "terminalMarkerCategoryId": "d05af3797e",
+      "nativeGraphVerified": true,
+      "nativeVariantGuardVerified": true,
+      "provisionalPrivateFeedbackHold": true,
+      "apiContentVerified": true,
+      "staticTerminalBindingVerified": true,
+      "knownAgentExclusionTags": [
+        "1st time buying agent",
+        "absent buying agent",
+        "absent selling agent",
+        "no business",
+        "realtor",
+        "repeat buying agent",
+        "super buying agent",
+        "vip buying agent"
+      ],
+      "verifiedAt": "2026-11-03T15:27:45Z"
     }
   },
   "orchestration": "apps-script"

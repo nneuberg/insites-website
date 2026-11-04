@@ -1,14 +1,15 @@
 // Server-only composition; no top-up or external notification capability.
 function hold(reason){const e=Error(reason);e.beforeSubmission=true;e.holdReason=reason;return e;}
-export function budgetedProvider({provider,budget,readAvailableCents,maxFeeCents,feeEvidence,verifiedActualFee=()=>null}){
+export function budgetedProvider({provider,budget,readAvailableCents,maxFeeCents,feeEvidence,verifiedActualFee=()=>null,amountCents=2500}){
  async function preflight(input){
+  if(![500,1000,2500].includes(amountCents)||provider.purchaseIntent?.currency!=='USD'||provider.purchaseIntent?.amount!==amountCents/100||(input.amountCents!==undefined&&input.amountCents!==amountCents))return {ready:false,reason:'purchase-intent-mismatch'};
   const existing=await budget.status(input.externalId);if(existing&&['uncertain','issued'].includes(existing.state))return {ready:false,reason:'outcome-unverified',reconcile:true};
   if(!Number.isSafeInteger(maxFeeCents)||maxFeeCents<0||!feeEvidence)return {ready:false,reason:'funding-unverified'};
   let available;try{available=await readAvailableCents();}catch{return {ready:false,reason:'balance-unavailable'}}
   if(!Number.isSafeInteger(available)||available<0)return {ready:false,reason:'balance-unavailable'};
-  if(available<2500+maxFeeCents)return {ready:false,reason:'insufficient-balance'};
-  const r=await budget.reserve({externalId:input.externalId,maxFeeCents,feeEvidence});
-  if(!r.reserved)return {ready:false,reason:'budget-held'};
+  if(available<amountCents+maxFeeCents)return {ready:false,reason:'insufficient-balance'};
+  const r=await budget.reserve({externalId:input.externalId,amountCents,maxFeeCents,feeEvidence});
+  if(!r.reserved)return {ready:false,reason:r.reason||'budget-held'};
   if(r.state!=='reserved')return {ready:false,reason:'outcome-unverified',reconcile:true};
   return {ready:true};
  }

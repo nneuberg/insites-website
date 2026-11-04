@@ -1,6 +1,14 @@
 import {createHash,randomBytes} from 'node:crypto';
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const tokenOK=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
+// Application claim-link deadline only; never changes an issued vendor gift card.
+export function sixMonthClaimDeadline(deliveredAt){
+ const d=new Date(deliveredAt);if(!Number.isFinite(d.getTime()))throw Error('Verified delivery time required');
+ const day=d.getUTCDate();d.setUTCDate(1);d.setUTCMonth(d.getUTCMonth()+6);
+ const last=new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1,0)).getUTCDate();
+ d.setUTCDate(Math.min(day,last));return d.getTime();
+}
+const expiryVerified=row=>!row.expiryEvidenceConflict&&Number.isFinite(row.invitationDeliveredAt)&&Number.isFinite(row.expiresAt)&&row.expiresAt===sixMonthClaimDeadline(row.invitationDeliveredAt)&&typeof row.invitationDeliveryReceipt==='string'&&!!row.invitationDeliveryReceipt;
 export function createClaims({store,provider,ledger,vault,enabled=false,now=()=>Date.now()}){
  const key=token=>'claims/'+hash(token),snapshots=new WeakMap();
  const get=async token=>{const entry=await store.getWithMetadata(key(token),{type:'json'});if(!entry)return null;const row=entry.data;snapshots.set(row,JSON.stringify(row));return row;};
@@ -37,17 +45,28 @@ export function createClaims({store,provider,ledger,vault,enabled=false,now=()=>
    await store.setJSON(existing.claimKey,existing.initial,{onlyIfNew:true});
    return {token,externalId:existing.initial.externalId,email:existing.initial.email,name:existing.initial.name};
   });},
+  // Internal only: caller must authenticate/bind the provider delivery receipt first.
+  // Called by the authenticated receipt consumer; no public mutation endpoint.
+  async recordInvitationDelivered(token,{deliveredAt,receiptId,conflict=false}={}){const first=await requireRow(token);return locked('use:'+first.useId,async()=>{
+   const row=await requireRow(token),at=Date.parse(deliveredAt);
+   if(!Number.isFinite(at)||at<row.createdAt||at>now()||typeof receiptId!=='string'||!receiptId.trim())throw Error('Verified delivery receipt required');
+   if(conflict){row.expiryEvidenceConflict=true;await save(token,row);throw Error('Conflicting delivery receipt');}
+   if(row.invitationDeliveredAt!==undefined){if(row.invitationDeliveredAt!==at||row.invitationDeliveryReceipt!==receiptId){row.expiryEvidenceConflict=true;await save(token,row);throw Error('Conflicting delivery receipt');}return {recorded:false,expiresAt:row.expiresAt};}
+   if(row.attemptedAt)throw Error('Attempted claim requires reconciliation');
+   row.invitationDeliveredAt=at;row.invitationDeliveryReceipt=receiptId;row.expiresAt=sixMonthClaimDeadline(at);await save(token,row);return {recorded:true,expiresAt:row.expiresAt};
+  });},
   async revoke(token){const first=await requireRow(token);return locked('use:'+first.useId,async()=>{const row=await requireRow(token);row.revokedAt=now();if(!row.attemptedAt)row.state='revoked';await save(token,row);return {revoked:true};});},
   async releaseHeld(token,evidence,commandId){if(!evidence?.providerConfirmedNeverSubmitted||typeof evidence.reference!=='string'||!evidence.reference.trim()||!/^[-a-zA-Z0-9_]{16,100}$/.test(commandId||'')||!evidence.expectedAttemptId)throw Error('Attempt-bound provider non-submission evidence required');const first=await requireRow(token);return locked('use:'+first.useId,async()=>{const row=await requireRow(token);if(row.consumedReleaseCommands?.includes(commandId))return {released:false,replayed:true};if(row.state!=='reconciling'||row.orderId||row.revokedAt||row.attemptId!==evidence.expectedAttemptId)throw Error('Not releasable');if(await provider.lookup(row.externalId))throw Error('Provider order exists');if(provider.releaseVerifiedAttempt)await provider.releaseVerifiedAttempt({externalId:row.externalId,reference:evidence.reference});row.recoveryEvidence=evidence.reference;row.previousAttemptAt=row.attemptedAt;row.consumedReleaseCommands=[...(row.consumedReleaseCommands||[]),commandId];delete row.attemptedAt;row.state='available';await save(token,row);return {released:true};});},
   // Operator-only recovery: revocation blocks access, not accounting for an order already attempted.
   async reconcile(token){const first=await requireRow(token);return locked('use:'+first.useId,async()=>{const row=await requireRow(token);if(!row.attemptedAt)return {state:row.state};if(!row.orderId){const order=await provider.lookup(row.externalId);if(!order)return {state:'reconciling'};Object.assign(row,await receipt(row,order),{state:'issued'});await save(token,row);}if(!row.ledgerSynced){await ledger('recordClaimIssued',{useId:row.useId,externalId:row.externalId,rewardId:row.rewardId,issuedAt:row.issuedAt});row.ledgerSynced=true;await save(token,row);}return {state:row.state,revoked:!!row.revokedAt};});},
-  async details(token){const row=await requireRow(token);return {state:row.revokedAt?'revoked':(!row.attemptedAt&&row.expiresAt&&now()>=row.expiresAt?'expired':row.state),amount:25,currency:'USD',product:intentValid(row.purchaseIntent)?row.purchaseIntent.product:null,enabled:!!(enabled&&intentValid(row.purchaseIntent))};},
+  async details(token){const row=await requireRow(token);return {state:row.revokedAt?'revoked':(!row.attemptedAt&&row.expiresAt&&now()>=row.expiresAt?'expired':row.state),amount:25,currency:'USD',product:intentValid(row.purchaseIntent)?row.purchaseIntent.product:null,enabled:!!(enabled&&intentValid(row.purchaseIntent)&&expiryVerified(row)&&now()<row.expiresAt),expiryVerified:expiryVerified(row)};},
   async claim(token,affirmed){if(!enabled)throw Error('Claims disabled');if(affirmed!==true)throw Error('Affirmative claim required');const first=await requireRow(token);
    return locked('use:'+first.useId,async guard=>{
     const row=await requireRow(token);
     if(row.revokedAt)throw Error('Claim revoked');
     if(!row.attemptedAt&&(row.revokedAt||(row.expiresAt&&now()>=row.expiresAt)))throw Error('Claim unavailable');
     if(!row.attemptedAt){
+     if(!expiryVerified(row)||now()>=row.expiresAt)throw Error('Verified claim deadline required');
      if(!matchingIntent(row))throw Error('Purchase configuration changed');
      // Existing ledger atomically reserves one reward per inspection/new client.
      // A repeated reservation is allowed only for this stable external order ID.
@@ -56,8 +75,9 @@ export function createClaims({store,provider,ledger,vault,enabled=false,now=()=>
      // canonical-customer checks under ScriptLock. Top-level transport ok is insufficient.
      if(!reservation||Array.isArray(reservation)||reservation.reserved!==true)throw Error('Reservation not confirmed');
      if(provider.preflight){const p=await provider.preflight({externalId:row.externalId,name:row.name,email:row.email});if(p?.ready!==true){row.state=p?.reconcile?'reconciling':'held';row.attention=p?.reason||'funding-unverified';if(p?.reconcile){row.attemptedAt=now();row.attemptId=randomBytes(16).toString('hex');}await save(token,row);return {state:row.state,reason:row.attention};}}
+     if(now()>=row.expiresAt)throw Error('Claim expired before submission');
      row.attemptedAt=now();row.attemptId=randomBytes(16).toString('hex');row.state='processing';delete row.attention;await save(token,row);
-     try{await guard();const order=await provider.create({externalId:row.externalId,name:row.name,email:row.email});Object.assign(row,await receipt(row,order),{state:'issued'});await save(token,row);}catch(error){if(error.beforeSubmission===true){delete row.attemptedAt;delete row.attemptId;row.state='held';row.attention=error.holdReason;await save(token,row);return {state:'held',reason:row.attention};}row.state='reconciling';row.attention=error.status===401?'authentication-rejected':error.status===403?'permission-rejected':[400,422].includes(error.status)?'validation-rejected':error.status===402?'insufficient-funds':error.status===409?'provider-conflict':error.status===429?'rate-limited':'outcome-unverified';if(Number.isInteger(error.status)&&error.status>=400&&error.status<=599)row.lastProviderHttpStatus=error.status;await save(token,row);return {state:row.state};}
+     try{await guard();const assertBeforeSubmission=()=>{if(now()>=row.expiresAt){const e=Error('Claim expired before submission');e.holdReason='claim-expired';throw e;}};assertBeforeSubmission();const order=await provider.create({externalId:row.externalId,name:row.name,email:row.email,assertBeforeSubmission});Object.assign(row,await receipt(row,order),{state:'issued'});await save(token,row);}catch(error){if(error.beforeSubmission===true){delete row.attemptedAt;delete row.attemptId;row.state='held';row.attention=error.holdReason;await save(token,row);return {state:'held',reason:row.attention};}row.state='reconciling';row.attention=error.status===401?'authentication-rejected':error.status===403?'permission-rejected':[400,422].includes(error.status)?'validation-rejected':error.status===402?'insufficient-funds':error.status===409?'provider-conflict':error.status===429?'rate-limited':'outcome-unverified';if(Number.isInteger(error.status)&&error.status>=400&&error.status<=599)row.lastProviderHttpStatus=error.status;await save(token,row);return {state:row.state};}
     }else if(row.state!=='issued'){
      // Never blindly repeat an order POST, including timeout/404/409 outcomes.
      try{const order=await provider.lookup(row.externalId);if(!order)return {state:'reconciling'};Object.assign(row,await receipt(row,order),{state:'issued'});await save(token,row);}catch{return {state:'reconciling'};}

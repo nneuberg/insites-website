@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {createClaims} from './referral-claims.mjs';
 import {verifySvix} from './referral-transport.mjs';
 const hash=v=>createHash('sha256').update(v).digest('hex');
 const states={'email.sent':'accepted','email.delivered':'delivered','email.bounced':'bounced','email.complained':'complained','email.failed':'failed','email.suppressed':'suppressed','email.delivery_delayed':'accepted'};
@@ -27,10 +28,20 @@ export function resendReceipts({store,vault,secret,enabled=false,now=()=>Date.no
    if((row.program||'consumer-referral')!==data.tags.program)throw Error('Program mismatch');
    const message=vault.open(row.message,k);
    if(data.to?.length!==1||data.to[0].trim().toLowerCase()!==message.to[0].trim().toLowerCase()||data.from!==message.from||data.subject!==message.subject)throw Error('Receipt identity mismatch');
-   if(row.emailId&&row.emailId!==data.email_id)throw Error('Conflicting provider receipt');
+   // Called only after signed envelope and identity validation.
+   const projectDelivery=async(conflict=false)=>{
+    const token=message.text?.match(/https:\/\/www\.insites\.services\/referral\/claim\/#([a-f0-9]{64})(?![a-f0-9])/)?.[1];
+    if(!token||Date.parse(event.created_at)<row.attemptedAt)throw Error('Unbound claim delivery timestamp');
+    const claimIndex=await store.get('claim-uses/'+hash(row.useId),{type:'json'});
+    const expectedInvitation=hash(data.tags.program==='consumer-referral'?row.useId:data.tags.program+'\0'+row.useId);
+    if(expectedInvitation!==invitation||claimIndex?.claimKey!=='claims/'+hash(token)||claimIndex.initial?.useId!==row.useId||claimIndex.initial?.email!==data.to[0].trim().toLowerCase())throw Error('Claim invitation binding mismatch');
+    await createClaims({store,now}).recordInvitationDelivered(token,{deliveredAt:event.created_at,receiptId:data.email_id,conflict});
+   };
+   if(row.emailId&&row.emailId!==data.email_id){if(event.type==='email.delivered')await projectDelivery(true);throw Error('Conflicting provider receipt');}
    if(['bounced','complained','suppressed'].includes(state))await store.setJSON('resend-suppression/'+hash(message.to[0].trim().toLowerCase()),{blocked:true,reason:state,observedAt:now()},{onlyIfNew:true});
    const next={...row,emailId:data.email_id,state:(rank[row.state]??0)>rank[state]?row.state:state,leaseUntil:0,lastReceiptAt:now(),receiptTypes:{...row.receiptTypes,[event.type]:true}};
    if(!(await store.setJSON(k,next,{onlyIfMatch:entry.etag})).modified)continue;
+   if(event.type==='email.delivered')await projectDelivery();
    const saved=await store.getWithMetadata(receiptKey,{type:'json'});
    await store.setJSON(receiptKey,{...saved.data,applied:true},{onlyIfMatch:saved.etag});
    return {recorded:true,state:next.state};

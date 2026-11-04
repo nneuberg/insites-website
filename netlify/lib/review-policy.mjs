@@ -1,5 +1,6 @@
 export const DAY=86400000;
-export const REMINDER_DAYS=[0,7,14];
+export const REMINDER_DAYS=[0,3,7];
+export const REVIEW_CADENCE_VERSION='review-037-referral-2-v1';
 export const ORIGIN='https://www.insites.services';
 export const GOOGLE_REVIEW='https://g.page/r/Cdo4F8EN0UmwEAE/review';
 export const AUDIENCES={Customer:'8f8749ba24',Agent:'3ebb3017d4'};
@@ -26,6 +27,17 @@ export function referralDates(endedAt){
  return {REVREF2:fmt(invite),REVREF6:fmt(six)};
 }
 export function dueStage(row,now){
+ if(row.cadenceVersion===REVIEW_CADENCE_VERSION){
+  if(row.deliveryHold||row.ratedAt||row.googleReviewedAt||row.endedAt||now>=row.expiresAt)return null;
+  if(row.preparingStage!==undefined)return [0,1,2].includes(row.preparingStage)?row.preparingStage:null;
+  const done=row.sentStages||[],next=[0,1,2].find(n=>!done.includes(n));
+  if(next===undefined||done.some(n=>n>next))return null;
+  if(next===0)return now>=row.createdAt?0:null;
+  const start=row.stageSentAt?.[0],previous=row.stageSentAt?.[next-1];
+  if(!Number.isSafeInteger(start)||!Number.isSafeInteger(previous))return null;
+  return now>=Math.max(start+REMINDER_DAYS[next]*DAY,previous+[0,3,4][next]*DAY)?next:null;
+ }
+
  // Historical tag-stage records have no reliable field-enrollment timestamps.
  // Never replay them or guess timing during a projection migration.
  if(row.cadenceVersion!=='weekly-v1'||row.deliveryHold)return null;
@@ -46,8 +58,15 @@ export function dueStage(row,now){
   return next>=0&&now>=row.createdAt+legacyDays[next]*DAY?next:null;
  }
  // After an outage send only the latest due request, not several catch-up emails.
- for(let index=REMINDER_DAYS.length-1;index>=0;index--)if(now>=row.createdAt+REMINDER_DAYS[index]*DAY&&!(row.sentStages||[]).includes(index))return index;
+ for(let index=2;index>=0;index--)if(now>=row.createdAt+[0,7,14][index]*DAY&&!(row.sentStages||[]).includes(index))return index;
  return null;
 }
 export const validToken=t=>typeof t==='string'&&/^[a-f0-9]{48}$/.test(t);
 export const escapeHTML=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+export function googleReviewTiming(row){
+ const confirmedAt=row.googleReviewedAt,occurredAt=Date.parse(row.googleReview?.createTime||'');
+ if(!Number.isSafeInteger(confirmedAt)||confirmedAt<=0)return null;
+ const exact=Number.isSafeInteger(occurredAt)&&occurredAt>0&&occurredAt>=row.createdAt&&occurredAt<=confirmedAt;
+ return{confirmedAt,occurredAt:exact?occurredAt:confirmedAt,timingSource:exact?'verified_google_create_time':'confirmation_fallback'};
+}

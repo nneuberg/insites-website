@@ -8,7 +8,7 @@ const root=s=>{const p=Object.values(s.people||{}).filter(p=>!p.parent);if(p.len
 const aliases=s=>[...new Set(Object.values(s.people).map(p=>p.email).filter(Boolean))];
 const memberKey=(a,e)=>'member:'+a+':'+createHash('md5').update(e).digest('hex');
 const sourceProof=p=>({schema:'hive-nobusiness-v1',verified:true,currentNoBusiness:true,conflicts:false,bookingStop:false,contactIds:p.contactIds,observedAt:p.observedAt});
-export function createOwnerIO({config,provider,eligibility,sourceNoBusiness,cache,manualExclusion=async()=>({verified:false}),now=()=>Date.now()}){
+export function createOwnerIO({config,provider,eligibility,sourceNoBusiness,cache,manualExclusion=async()=>({verified:false}),ratingProjection=null,now=()=>Date.now()}){
  async function enrollment(email,program){
   const excluded=await manualExclusion(email);if(excluded.verified!==true||excluded.excluded)return{kind:'hold'};
   const p=await sourceNoBusiness(email);if(p.eligible!==true)return{kind:'hold'};
@@ -21,6 +21,7 @@ export function createOwnerIO({config,provider,eligibility,sourceNoBusiness,cach
   return{candidates,cursor:i>=rows.length?0:i};
  }
  async function preflight(state){
+  if(ratingProjection?.enabled())try{await ratingProjection.cleanup();}catch{return {kind:'hold'};}
   const p=root(state);if(p.stops.length||p.quarantine.length)return{kind:'hold'};
   const reserved=Object.values(state.permits).find(a=>a.state==='reserved');if(reserved)return{kind:'abandon',permitId:reserved.id};
   if(Object.values(state.intents).some(i=>i.state==='queued'&&i.expiresAt<=now()))return{kind:'expire'};
@@ -36,11 +37,19 @@ export function createOwnerIO({config,provider,eligibility,sourceNoBusiness,cach
    }
   }
   const permission=p.programs?.['nb-permission-v1'];if(permission&&!permission.progressDoneAt){const intents=Object.values(state.intents).filter(i=>i.program==='nb-permission-v1'),sent=Object.values(state.permits).filter(a=>intents.some(i=>i.id===a.intentId)&&a.state==='sent'),original=sent.find(a=>state.intents[a.intentId].stage==='o1'),latest=Math.max(0,...sent.map(a=>a.firstSentObservedAt));if(original&&now()>=Math.max(permission.anchorAt+74*catalog.DAY,original.firstSentObservedAt+14*catalog.DAY,latest+7*catalog.DAY)&&intents.every(i=>['sent','skipped','held','no_send','expired'].includes(i.state)))return{kind:'progressDone',program:'nb-permission-v1'};}
+  const sequence=p.reviewSequence;
+  if(config.referralOwnerEnabled===true&&sequence?.version==='review-037-referral-2-v1'&&sequence.program==='review-customer-v1'&&!sequence.referralIntentId&&!sequence.referralHold){
+   const stage=sequence.googleReview?'initial-reviewed':'initial-unreviewed',e=config.executors['referral-customer-v1:'+stage];
+   const last=Math.max(0,...Object.values(state.permits).filter(a=>a.state==='sent'&&state.intents[a.intentId]?.program===sequence.program&&state.intents[a.intentId]?.context?.token===sequence.token).map(a=>a.firstSentObservedAt||0));
+   const dueAt=sequence.googleReview?Math.max((sequence.googleReview.occurredAt??sequence.googleReview.confirmedAt)+2*catalog.DAY,sequence.googleReview.confirmedAt,last+2*catalog.DAY):sequence.startedAt?Math.max(sequence.startedAt+9*catalog.DAY,last+2*catalog.DAY):Infinity;
+   if(e?.verified===true&&dueAt<=now()){const i={program:'referral-customer-v1',stage,context:{token:sequence.token}},check=await eligibility({person:p,state,intent:i,executor:e});if(check.googleReview)return{kind:'recordGoogleReview',proof:check.googleReview};if(check.eligible===true)return{kind:'queueReferralInitial',intentId:operationId('referral-initial',p.id),expiresAt:dueAt+30*catalog.DAY,proof:{verified:true,eligible:true,token:sequence.token,reviewed:!!sequence.googleReview,observedAt:check.observedAt,ratingProof:check.ratingProof}};}
+  }
   const due=Object.values(state.intents).filter(i=>i.state==='queued'&&!p.programStops?.[i.program]?.length&&i.dueAt<=now()&&i.expiresAt>now()).sort((a,b)=>a.dueAt-b.dueAt||a.id.localeCompare(b.id));
   for(const i of due){
    const e=config.executors[i.program+':'+i.stage];if(!e?.verified)continue;
    if(catalog.NB_PROGRAMS.includes(i.program)&&!await manualAllowed())continue;
-   const check=await eligibility({person:p,state,intent:i,executor:e});if(check.stop)return{kind:'stop',...check.stop};if(check.deferUntil)return{kind:'defer',intentId:i.id,notBefore:check.deferUntil};if(check.skip)return{kind:'skip',intentId:i.id,...check.skip};if(check.eligible!==true)continue;
+   if(i.program==='referral-customer-v1'&&ratingProjection){let projection;try{projection=await ratingProjection.reconcile({person:p,state,intent:i,executor:e});}catch{continue;}if(projection.projected!==true)continue;}
+   const check=await eligibility({person:p,state,intent:i,executor:e});if(check.googleReview)return{kind:'recordGoogleReview',proof:check.googleReview};if(check.stop)return{kind:'stop',...check.stop};if(check.deferUntil)return{kind:'defer',intentId:i.id,notBefore:check.deferUntil};if(check.skip)return{kind:'skip',intentId:i.id,...check.skip};if(check.eligible!==true)continue;
    const addresses=aliases(state);if(!addresses.length||addresses.length>4)return{kind:'hold'};const members=[];for(const address of addresses)for(const audience of config.audiences){const member=await provider.member(audience,address);if(member)members.push({address,audience,member});}
    if(members.some(x=>['cleaned','unsubscribed'].includes(x.member.status)))return{kind:'stop',reason:members.some(x=>x.member.status==='cleaned')?'cleaned':'unsubscribe'};
    const subscribed=members.filter(x=>x.member.status==='subscribed');if(subscribed.length!==1||subscribed[0].audience!==e.audienceId||subscribed[0].address!==p.email)return{kind:i.program.startsWith('review-')?'holdIntent':'hold',intentId:i.id,reason:'review_recipient_ambiguity'};
@@ -53,7 +62,7 @@ export function createOwnerIO({config,provider,eligibility,sourceNoBusiness,cach
    }
    if(check.prepare)try{await check.prepare(provider,subscribed[0]);}catch{return{kind:'holdIntent',intentId:i.id,reason:'projection_unverified'};}
    if(!Number.isSafeInteger(check.observedAt)||check.observedAt>now()||now()-check.observedAt>60000)return{kind:'hold'};
-   return{kind:'dispatch',intentId:i.id,permitId:operationId('permit',i.id),preflight:{verified:true,allAudiencesCovered:true,executorUnused:true,executorBinding:JSON.stringify(e),terminalBaseline,subscribed:true,noStopObserved:true,observedAt:check.observedAt,historyFrom:check.observedAt-WINDOW,audienceId:e.audienceId,memberKey:memberKey(e.audienceId,p.email),lastSendObservedAt:0}};
+   return{kind:'dispatch',intentId:i.id,permitId:i.program==='referral-customer-v1'?operationId('permit',i.id,i.stage):operationId('permit',i.id),preflight:{verified:true,allAudiencesCovered:true,executorUnused:true,executorBinding:JSON.stringify(e),terminalBaseline,subscribed:true,noStopObserved:true,observedAt:check.observedAt,historyFrom:check.observedAt-WINDOW,audienceId:e.audienceId,memberKey:memberKey(e.audienceId,p.email),lastSendObservedAt:0,...(i.program==='referral-customer-v1'?{ratingProof:check.ratingProof}:{})}};
   }
   return{kind:'hold'};
  }

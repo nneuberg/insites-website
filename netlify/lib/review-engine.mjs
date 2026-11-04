@@ -3,8 +3,8 @@ import {HiveUnavailable,hiveUnavailable} from './hive-incident.mjs';
 import {queueLowRating,deliverLowRating} from './review-low-rating.mjs';
 import {inReviewScope,excludedRequest,roleCutoff} from './review-scope.mjs';
 import {createHash,randomBytes} from 'node:crypto';
-import {AUDIENCES,DAY,ORIGIN,eligibleRecipients,referralDates,dueStage,validToken} from './review-policy.mjs';
-export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.now(),hivePaused=false,hiveTransport=null,sourceContact=null,admission=null}){
+import {AUDIENCES,DAY,ORIGIN,eligibleRecipients,referralDates,dueStage,validToken,REVIEW_CADENCE_VERSION} from './review-policy.mjs';
+export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.now(),hivePaused=false,hiveTransport=null,sourceContact=null,admission=null,ratingInvalidation=null,ratingCleanup=null}){
  const inLaunchScope=row=>inReviewScope(row,env);
  const projectionPaused=env.REVIEW_PROJECTION_PAUSED==='true';
  const hash=s=>createHash('sha256').update(s).digest('hex');
@@ -50,6 +50,11 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
    if(held?.data.owner===owner)await store.setJSON(lockKey,{owner,until:0},{onlyIfMatch:held.etag});
   }
  }
+ async function invalidateRating(row){
+  if(!ratingInvalidation||row.isTest)return;
+  try{const result=await ratingInvalidation(row);if(result?.held||result?.uncertain)throw Error('Rating revocation unresolved');}
+  catch{row.referralHold={reason:'rating_revocation_unverified',at:now()};await save(row);}
+ }
  async function finish(row){
   // Test feedback is stored locally but must never change real audience tags.
   if(row.isTest){row.finishSynced=true;await save(row);return;}
@@ -57,7 +62,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   if(projectionPaused||env.REVIEW_ENABLED!=='true')return;
   await mc(row,{merge_fields:{RVPEND:'ENDED',...(row.ratedAt?{RVFEED:'YES'}:{}),...(row.googleReviewedAt?{RVGDONE:'YES'}:{})}});
   // Review launch must not enroll clients into unrelated referral journeys.
-  if(env.REVIEW_REFERRALS_ENABLED==='true'&&row.role==='Customer'&&!row.isTest)await mc(row,{merge_fields:referralDates(row.endedAt)});
+  if(row.cadenceVersion!==REVIEW_CADENCE_VERSION&&env.REVIEW_REFERRALS_ENABLED==='true'&&row.role==='Customer'&&!row.isTest)await mc(row,{merge_fields:referralDates(row.endedAt)});
   row.finishSynced=true;await save(row);
  }
  async function syncHiveTag(row){
@@ -86,6 +91,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
     if(!row.googleConfirmationEndedAt)row.endedAt=now();row.googleConfirmationEndedAt=row.endedAt;
     row.finishSynced=false;await save(row);
    }
+   await invalidateRating(row);
    // Resume incomplete work without replaying already acknowledged provider writes.
    if(!row.finishSynced)await finish(row);
    if(!row.hiveTagSynced)await syncHiveTag(row);
@@ -94,11 +100,13 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  }
  async function send(row,stage){
   if(projectionPaused)return;
+  if(row.cadenceVersion===REVIEW_CADENCE_VERSION&&!admission){row.deliveryHold={reason:'new_cadence_requires_shared_owner',at:now()};await save(row);return;}
   if(admission){
    const result=await admission.stage(row,stage);
+   if(result.superseded){row.reviewSequenceCompleteAt=row.reviewSequenceCompleteAt||now();row.endedAt=row.endedAt||now();delete row.preparingStage;delete row.stagePrepared;await save(row);await finish(row);return;}
    if(result.held){row.deliveryHold={reason:result.reason,at:now()};delete row.preparingStage;await save(row);return;}
    row.admissionOwned=true;
-   if(result.sent){row.sentStages=[...new Set([...row.sentStages,stage])];row.lastStageQueuedAt=result.sentAt;delete row.preparingStage;delete row.stagePrepared;}else if(result.queued){row.preparingStage=stage;}
+   if(result.sent){row.sentStages=[...new Set([...row.sentStages,stage])];row.lastStageQueuedAt=result.sentAt;row.stageSentAt=row.stageSentAt||{};row.stageSentAt[stage]=row.stageSentAt[stage]||result.sentAt;delete row.preparingStage;delete row.stagePrepared;}else if(result.queued){row.preparingStage=stage;}
    await save(row);return;
   }
   const member=await mc(row,undefined,'GET');
@@ -163,7 +171,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
     // One review sequence per person, including repeat inspections.
     if(prior)return;
     const token=index?.token||randomBytes(24).toString('hex');
-    const row={...person,inspectionEndedAt:person.endedAt,endedAt:null,token,createdAt:now(),expiresAt:now()+21*DAY,sentStages:[],cadenceVersion:'weekly-v1'};
+    const row={...person,inspectionEndedAt:person.endedAt,endedAt:null,token,createdAt:now(),expiresAt:now()+21*DAY,sentStages:[],cadenceVersion:REVIEW_CADENCE_VERSION};
     delete row.endedAt;
     try{const member=await mc(row,undefined,'GET');if(member.status!=='subscribed'||member.merge_fields?.RVGDONE==='YES'||member.tags?.some(t=>t.name==='google reviewed'))return;}catch(e){if(e.status===404)return;throw e;}
     // Index and row creation happen under a per-person lock; indexes recover from a crash between writes.
@@ -200,19 +208,20 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
    if(!Number.isInteger(input.rating)||input.rating<1||input.rating>5||typeof input.feedback!=='string'||input.feedback.length>4000)throw Error('Invalid feedback');
    if(row.ratedAt){
     const feedback=input.feedback.trim(),revision=row.feedbackRevision||1;
-    if(row.rating===input.rating&&row.feedback===feedback)return {saved:true};
+    if(row.rating===input.rating&&row.feedback===feedback){await invalidateRating(row);return {saved:true};}
     if(input.revision!==revision)throw Object.assign(Error('Feedback changed. Reload this page before editing.'),{status:409});
     row.rating=input.rating;row.feedback=feedback;row.feedbackRevision=revision+1;row.feedbackUpdatedAt=now();
-    queueLowRating(row,now());await save(row);return {saved:true};
+    queueLowRating(row,now());await save(row);await invalidateRating(row);return {saved:true};
    }
    if(input.revision!==undefined&&input.revision!==0)throw Object.assign(Error('Feedback changed. Reload this page before editing.'),{status:409});
-   row.rating=input.rating;row.feedback=input.feedback.trim();row.ratedAt=now();row.endedAt=now();queueLowRating(row,now());await save(row);
+   row.rating=input.rating;row.feedback=input.feedback.trim();row.ratedAt=now();row.endedAt=now();queueLowRating(row,now());await save(row);await invalidateRating(row);
    try{await finish(row);}catch{/* Stored feedback is retried by the worker. */}
    return {saved:true};
   });
  }
  async function run({discover=true}={}){
   if(projectionPaused||env.REVIEW_ENABLED!=='true'||!Number.isFinite(Date.parse(env.REVIEW_START_AFTER||'')))return {paused:true};
+  if(ratingCleanup)try{await ratingCleanup();}catch{/* Expiry queue is durable; authorization still expires locally. */}
   let read=0,discoveryDeferred=false;
   if(discover&&env.REVIEW_NEW_INTAKE_ENABLED!=='false'){
   try{
