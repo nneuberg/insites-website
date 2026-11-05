@@ -1,4 +1,6 @@
-import {getStore} from '@netlify/blobs';
 import {handleCardApproval} from '../lib/cards-approval-http.mjs';
-import {sourceServices} from '../lib/hive-source-runtime.mjs';
-export default (request,context)=>handleCardApproval({request,context,role:'bridge',env:{CARDS_APPROVAL_OWNER_SHA256:Netlify.env.get('CARDS_APPROVAL_OWNER_SHA256'),CARDS_APPROVAL_BRIDGE_SHA256:Netlify.env.get('CARDS_APPROVAL_BRIDGE_SHA256')},openStore:()=>getStore({name:'insites-agent-cards',consistency:'strong'}),getSourceView:()=>sourceServices(context).view});
+import {cardRuntime,CARD_PIPELINE_PLAN} from '../lib/cards-runtime.mjs';
+export default (request,context)=>{
+ let runtime;const services=()=>runtime||=cardRuntime(context);
+ return handleCardApproval({request,context,role:'bridge',env:{CARDS_APPROVAL_OWNER_SHA256:Netlify.env.get('CARDS_APPROVAL_OWNER_SHA256'),CARDS_APPROVAL_BRIDGE_SHA256:Netlify.env.get('CARDS_APPROVAL_BRIDGE_SHA256')},openStore:()=>services().store,getSourceView:()=>services().view,refreshHistory:()=>services().refresh(),history:{readComplete:()=>services().history.readComplete()},pipeline:CARD_PIPELINE_PLAN});
+};

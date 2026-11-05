@@ -29,7 +29,7 @@ function terminalInspection(row,at){
 function contactIds(record){if(!Array.isArray(record?.contacts)||record.contacts.some(c=>typeof c?.id!=='string'))return null;return record.contacts.map(c=>c.id);}
 // One lease and at most ONE provider request per tick. No send/eligibility action.
 // All callers must share company-scoped strong-consistency storage and transport.
-export async function runHiveSourceCoordinator({store,cache,transport,withLease,enabled=false,repairGeneration=false,now=()=>Date.now(),historyComplete=false,contactDeletionRecoveryVerified=false,customerRoleObservationEnabled=SOURCE_PLAN.customerRoleObservationEnabled}={}){
+export async function runHiveSourceCoordinator({store,cache,transport,withLease,enabled=false,repairGeneration=false,now=()=>Date.now(),historyComplete=false,contactDeletionRecoveryVerified=false,customerRoleObservationEnabled=SOURCE_PLAN.customerRoleObservationEnabled,observeContactBusiness}={}){
  if(enabled!==true)return {deferred:true,requests:0};
  if(typeof withLease!=='function'||typeof transport?.request!=='function')throw Error('Shared lease and quota transport required');
  return withLease(SOURCE_COORDINATOR_LEASE,async(lease)=>{
@@ -106,7 +106,15 @@ export async function runHiveSourceCoordinator({store,cache,transport,withLease,
   const task=state.active;let requests=0;
   if(!task.traversal.done){
    let pageSummary=null;const t=task.traversal,params={...task.params,cursor:t.nextCursor,...(task.purpose==='delta'?{since:t.since}:{})};
-   try{const response=await transport.request(sourceListPath(task.kind,params));requests=1;const page=await response.json();pageSummary={rows:Array.isArray(page?.data)?page.data.length:null,total:Number.isSafeInteger(page?.total)?page.total:null,cursorKind:page?.next_cursor===null?'null':typeof page?.next_cursor};if(['photo-conflict-recheck','customer-role-recheck'].includes(task.purpose)&&(!Array.isArray(page.data)||page.next_cursor!==null||page.total!==page.data.length||page.data.length>task.params.ids.length||page.data.some(r=>!task.params.ids.includes(r?.id))))throw Error('Unexpected inspection identity');task.traversal=appendSourcePage(t,{cursor:t.nextCursor,rows:page.data.map(r=>normalizeListRecord(task.kind,r)),nextCursor:page.next_cursor,total:page.total});await save(store,SOURCE_COORDINATOR_KEY,state);}
+   try{const response=await transport.request(sourceListPath(task.kind,params));requests=1;const page=await response.json();pageSummary={rows:Array.isArray(page?.data)?page.data.length:null,total:Number.isSafeInteger(page?.total)?page.total:null,cursorKind:page?.next_cursor===null?'null':typeof page?.next_cursor};if(['photo-conflict-recheck','customer-role-recheck'].includes(task.purpose)&&(!Array.isArray(page.data)||page.next_cursor!==null||page.total!==page.data.length||page.data.length>task.params.ids.length||page.data.some(r=>!task.params.ids.includes(r?.id))))throw Error('Unexpected inspection identity');task.traversal=appendSourcePage(t,{cursor:t.nextCursor,rows:page.data.map(r=>normalizeListRecord(task.kind,r)),nextCursor:page.next_cursor,total:page.total});
+    // Passive, separate card-business evidence from this already budgeted GET.
+    // No normalized row, quota, cursor or shared identity behavior is changed.
+    // A card-only observation failure cannot quarantine the shared source plane.
+    if(task.kind==='contacts'&&!repairGeneration&&typeof observeContactBusiness==='function'){
+     let timer;
+     try{await lease.assertHeld();await Promise.race([observeContactBusiness({rows:page.data,observedAt:now()}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('card_observation_timeout')),1500);})]);}catch{}finally{clearTimeout(timer);}
+    }
+    await save(store,SOURCE_COORDINATOR_KEY,state);}
    catch(error){if(error.code==='HIVE_TRANSPORT_DEFERRED')return deferred(error);if(requests===1){const safeReasons=['Unexpected inspection identity','Incomplete or inconsistent pagination','Duplicate or wrong source identities','Pagination cycle','Incomplete coverage','Incomplete source record','Incomplete contact authority','Incomplete contact tags or roles','Missing source revision','Invalid source calendar time','Invalid source revision','Invalid normalized source record','Invalid normalized email identities'];state.quarantined=true;state.validationFailure={at:now(),kind:task.kind,purpose:task.purpose,page:pageSummary,pages:task.traversal.pages,rows:task.traversal.rows.length,total:task.traversal.total,reason:safeReasons.includes(error.message)?error.message:'source-page-invalid'};await save(store,SOURCE_COORDINATOR_KEY,state);return {deferred:true,reason:'source-page-quarantined',requests:1,validation:state.validationFailure};}throw error;}
   }
   const t=task.traversal;if(!t.done)return {requests,task:task.purpose,complete:false};

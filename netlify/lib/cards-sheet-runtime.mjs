@@ -1,18 +1,37 @@
 import {randomUUID} from 'node:crypto';
 import {ledger} from './referral-transport.mjs';
 import {HISTORY_HEADERS,decodeHistory,projectCard} from './cards-history.mjs';
-import {readState,mutate,importHistory,fingerprint,changed} from './cards-core.mjs';
+import {readState,mutate,importHistory,fingerprint,changed,reviewFingerprint} from './cards-core.mjs';
+import {attachCardHistoryAudit} from './cards-history-audit.mjs';
+import {buildOrderBody} from './cardly-provider.mjs';
 export const CARD_HISTORY_PLAN=Object.freeze({enabled:true,version:'append-history-v1',deliveryEnabled:false});
+// Enable only after the deployed Apps Script append validator is read back,
+// independently reviewed and verified for these receipt-backed states.
+export const CARD_PROVIDER_HISTORY_PLAN=Object.freeze({enabled:false,version:'provider-receipts-v1'});
 export function createCardSheetClient({call=ledger,env=process.env}={}){
  return {readComplete:()=>call('cardHistorySnapshot',{},env,7500),append:input=>call('cardHistoryAppend',input,env,7500),lookup:operationId=>call('cardHistoryOperation',{operationId},env,7500)};
 }
 const literal=v=>v==null?'':typeof v==='boolean'?String(v).toUpperCase():String(v);
-export function appendRecord(job){
+export function appendRecord(job,{providerHistoryEnabled=CARD_PROVIDER_HISTORY_PLAN.enabled}={}){
  const record=projectCard(job);
- if(!['HOLD','DRAFT','MANUAL_REVIEW','AWAITING_APPROVAL','APPROVED','SUPERSEDED'].includes(job.status)||job.orderAttempt||job.orderId||job.sentText)throw Error('provider_history_requires_separate_integration');
+ const providerState=!!(job.orderAttempt||job.orderId||job.sentText)||!['HOLD','DRAFT','MANUAL_REVIEW','AWAITING_APPROVAL','APPROVED','SUPERSEDED'].includes(job.status);
+ if(providerState){
+  if(providerHistoryEnabled!==true)throw Error('provider_history_requires_separate_integration');
+  record.cost='';record.currency='';
+  if(!job.orderAttempt||!job.approval||!job.approvedText||job.approval.fingerprint!==reviewFingerprint(job,job.approvedText,job.approval.artwork)||job.orderAttempt.approvalFingerprint!==job.approval.fingerprint||job.orderAttempt.testMode!==false||job.orderAttempt.bodyHash!==fingerprint(job.orderAttempt.requestBody)||!['SUBMITTING','UNKNOWN','FAILED','ORDERED','SENT'].includes(job.status))throw Error('provider_projection_unverified');
+  if(job.orderAttempt.bodyHash!==fingerprint(buildOrderBody({...job,status:'APPROVED',historyReconciled:true}))||!Number.isFinite(job.orderAttempt.submittedAt)||job.orderAttempt.submittedAt<=0||job.orderAttempt.idempotencyKey!==job.idempotencyKey||job.orderAttempt.externalOrderNumber!==job.externalOrderNumber)throw Error('provider_projection_unverified');
+  if(job.status==='FAILED'&&job.orderAttempt.outcome!=='not_applied')throw Error('provider_projection_unverified');
+  if(['ORDERED','SENT'].includes(job.status)){
+   const r=job.providerReceipt;
+   if(r?.verified!==true||r.testMode===true||r.orderId!==job.orderId||r.evidence!==job.receiptEvidence||r.evidence!=='cardly-request-receipt:'+fingerprint(r.proof)||r.approvalFingerprint!==job.approval.fingerprint||r.idempotencyKey!==job.idempotencyKey||r.externalOrderNumber!==job.externalOrderNumber||r.exactText!==job.approvedText||r.recipientFingerprint!==fingerprint(job.snapshot.recipient)||r.textProvenance!=='immutable_submitted_request'||r.proof?.bodyHash!==job.orderAttempt.bodyHash||r.proof.orderId!==r.orderId||r.proof.approvalFingerprint!==r.approvalFingerprint||r.proof.externalOrderNumber!==r.externalOrderNumber||r.proof.orderedAt!==r.orderedAt||r.proof.credits!==r.credits||r.status!==job.status||r.orderedAt!==job.orderedAt||!Number.isFinite(r.credits)||r.credits<=0||r.credits>job.orderAttempt.maxCredits||(job.status==='SENT'&&(r.proof.sentAt!==r.sentAt||r.sentAt!==job.sentAt||job.sentText!==r.exactText)))throw Error('provider_projection_unverified');
+   // No fabricated currency price from a prepaid credit debit. Exact credit
+   // amount/provenance stay in the receipt evidence and private provider record.
+   record.cost='';record.currency='';record.evidence_reference=r.evidence+'; credits='+r.credits+'; wording=immutable_submitted_request';
+  }else if(job.orderId||job.sentText||job.sentAt||job.orderedAt)throw Error('provider_projection_unverified');
+ }
  // Immutable event row identity, stable logical card identity in idempotency_key.
  record.record_id=job.id+':v'+job.revision;
- record.cardly_external_order_number='';
+ if(!providerState)record.cardly_external_order_number='';
  return Object.fromEntries(HISTORY_HEADERS.map(h=>[h,literal(record[h])]));
 }
 export async function reconcileAppend({store,sheet}){
@@ -25,22 +44,22 @@ export async function reconcileAppend({store,sheet}){
   if(s.sheetAppend?.operationId!==intent.operationId)throw Error('append_changed');
   if(outcome.status==='applied'){
    const j=s.jobs[intent.jobId];if(j?.revision===intent.revision)j.projectionPending=false;
-   s.sheetReceipts??={};s.sheetReceipts[intent.record.record_id]={operationId:intent.operationId,hash:fingerprint(intent.record)};
+   s.sheetReceipts??={};s.sheetReceipts[intent.record.record_id]={operationId:intent.operationId,hash:fingerprint(intent.record),agentId:intent.record.hive_contact_id};
   }
   s.sheetAppend=null;return {status:outcome.status==='applied'?'appended':'safe_to_retry',deliveryEnabled:false};
  });
 }
-export async function appendNext({store,sheet,now=Date.now()}){
+export async function appendNext({store,sheet,now=Date.now(),providerHistoryEnabled=CARD_PROVIDER_HISTORY_PLAN.enabled}){
  const claimed=await mutate(store,s=>{
   if(s.sheetAppend||s.historyWrite||s.projectionLease)return {unchanged:true,status:'reconcile_required'};
   const j=Object.values(s.jobs).find(j=>j.projectionPending);if(!j)return {unchanged:true,status:'idle'};
-  const record=appendRecord(j);const intent={jobId:j.id,revision:j.revision,record,operationId:randomUUID(),at:now};s.sheetAppend=intent;return {intent};
+  const record=appendRecord(j,{providerHistoryEnabled});const intent={jobId:j.id,revision:j.revision,record,operationId:randomUUID(),at:now};s.sheetAppend=intent;return {intent};
  });
  if(!claimed.intent)return claimed;
  try{await sheet.append({operationId:claimed.intent.operationId,record:claimed.intent.record});}catch{return {status:'reconcile_required'};}
  return reconcileAppend({store,sheet});
 }
-async function refreshSheetHistoryUnchecked({store,sheet,now=Date.now()}){
+async function refreshSheetHistoryUnchecked({store,sheet,now=Date.now(),strictAudit=CARD_PROVIDER_HISTORY_PLAN.enabled}){
  let snapshot;
  try{snapshot=await sheet.readComplete();if(snapshot?.version!==CARD_HISTORY_PLAN.version||snapshot.complete!==true)throw Error('sheet_version_mismatch');}
  catch(error){const s=await readState(store);for(const agentId of new Set(Object.values(s.jobs).map(j=>j.snapshot.agentId)))await importHistory(store,{agentId,rows:[],complete:false,evidence:'sheet_read_failed'},now);throw error;}
@@ -56,10 +75,14 @@ async function refreshSheetHistoryUnchecked({store,sheet,now=Date.now()}){
  // audit in trusted CAS state, never a sheet boolean or an empty-row inference.
  const agents=new Set([...Object.values(state.jobs).map(j=>j.snapshot.agentId),...snapshot.rows.map(r=>r[1]).filter(Boolean)]);
  const reports=[];
+ // Keep the already-enabled, approval-only tracker compatible while the new
+ // pipeline is OFF. This legacy audit shape must never authorize new pipeline
+ // activity: cardRuntime.refresh always requests strictAudit, and activating
+ // provider history changes the scheduled tracker to the same strict path.
+ const auditedSnapshot=strictAudit===true?attachCardHistoryAudit({snapshot,state,now}):null;
  for(const agentId of agents){
-  const audit=state.historyAudits?.[agentId];
-  const rows=snapshot.rows.filter(r=>r[1]===agentId);
-  const imports={...snapshot,reconciliation:{[agentId]:{complete:audit?.complete===true&&Number.isFinite(audit.verifiedAt)&&audit.verifiedAt<=now&&Number.isFinite(audit.expiresAt)&&audit.expiresAt>now,evidence:audit?.evidence||'',expectedRecords:rows.length}}};
+  const audit=state.historyAudits?.[agentId],rows=snapshot.rows.filter(r=>r[1]===agentId);
+  const imports=auditedSnapshot||{...snapshot,reconciliation:{[agentId]:{complete:audit?.complete===true&&Number.isFinite(audit.verifiedAt)&&audit.verifiedAt<=now&&Number.isFinite(audit.expiresAt)&&audit.expiresAt>now,evidence:audit?.evidence||'',expectedRecords:rows.length}}};
   try{const decoded=decodeHistory(imports,agentId);await importHistory(store,{agentId,rows:decoded.rows.filter(row=>{const own=state.jobs[row.id.replace(/:v\d+$/,'')];return !(own?.snapshot.agentId===agentId&&state.sheetReceipts?.[row.id]);}),complete:true,evidence:decoded.evidence},now);reports.push({agentId,status:'reconciled'});}
   catch{await importHistory(store,{agentId,rows:[],complete:false,evidence:'provider_legacy_audit_required'},now);reports.push({agentId,status:'history_unreconciled'});}
  }

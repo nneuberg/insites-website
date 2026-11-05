@@ -19,7 +19,6 @@ export function decodeHistory(snapshot,agentId){
   seen.add(row.record_id);
   if(row.hive_contact_id!==agentId)continue;
   if(!['HOLD','DRAFT','MANUAL_REVIEW','AWAITING_APPROVAL','APPROVED','SUBMITTING','ORDERED','UNKNOWN','FAILED','SENT','DELIVERED','CANCELLED'].includes(row.status))throw Error('history_status_unknown');
-  if(['SUBMITTING','UNKNOWN'].includes(row.status))throw Error('history_outcome_unresolved');
   if(row.exact_sent_wording&&!terminal.has(row.status))throw Error('history_sent_status_conflict');
   if(terminal.has(row.status)&&(!required(row.exact_sent_wording)||!required(row.cardly_order_id)||!required(row.sent_at)||!required(row.evidence_reference)))throw Error('history_sent_evidence_missing');
   const texts=[row.exact_draft_wording,row.exact_approved_wording,row.exact_sent_wording].filter(Boolean);
@@ -28,6 +27,18 @@ export function decodeHistory(snapshot,agentId){
   records.push(row);
  }
  if(records.length!==reconciliation.expectedRecords)throw Error('history_record_count_mismatch');
+ // Append-only lifecycle records retain every prior wording. Only the latest
+ // proven revision of each logical card determines whether an attempt remains
+ // unresolved; an old UNKNOWN row must not poison a later real receipt forever.
+ const latest=new Map();
+ for(const row of records){
+  const match=/^(.+):v([1-9][0-9]*)$/.exec(row.record_id),base=match?match[1]:row.record_id,version=match?Number(match[2]):0,key=row.idempotency_key||base;
+  if(!Number.isSafeInteger(version))throw Error('history_revision_invalid');
+  const prior=latest.get(key);
+  if(prior&&(prior.base!==base||prior.row.hive_inspection_id!==row.hive_inspection_id||prior.version===version))throw Error('history_revision_conflict');
+  if(!prior||version>prior.version)latest.set(key,{row,base,version});
+ }
+ if([...latest.values()].some(({row})=>['SUBMITTING','UNKNOWN'].includes(row.status)))throw Error('history_outcome_unresolved');
  return {records,evidence:fingerprint({revision:snapshot.revision,evidence:snapshot.evidence,reconciliation}),rows:records.flatMap(r=>[...new Set([r.exact_draft_wording,r.exact_approved_wording,r.exact_sent_wording].filter(Boolean))].map(text=>({id:r.record_id,text,inspectionId:r.hive_inspection_id})))};
 }
 export async function refreshHistory({store,history,agentId,now=Date.now()}){
@@ -115,6 +126,15 @@ export async function prepareDraftContext({store,history,snapshot,now=Date.now()
  if(p?.verified!==true||!required(p.evidence)||p.inspectionId!==snapshot.inspectionId||p.agentId!==snapshot.agentId||![p.streetName,p.clientName].some(required))throw Error('personalization_source_required');
  let decoded;
  try{decoded=decodeHistory(await history.readComplete(),snapshot.agentId);}catch(error){await importHistory(store,{agentId:snapshot.agentId,rows:[],complete:false,evidence:'history_context_failed'},now);throw error;}
- await importHistory(store,{agentId:snapshot.agentId,rows:decoded.rows,complete:true,evidence:decoded.evidence},now);
+ const state=await readState(store),records=new Map(decoded.records.map(r=>[r.record_id,r]));
+ // An append-only revision of this same card is not another card. Only an exact
+ // journal-confirmed row may be excluded from self-collision; all other cards
+ // and unrecognized rows still enter the repetition history. Keep every wording
+ // in the returned context, including this card's previous draft revisions.
+ const rows=decoded.rows.filter(row=>{
+  const own=state.jobs[row.id.replace(/:v\d+$/,'')],receipt=state.sheetReceipts?.[row.id];
+  return !(own?.snapshot.agentId===snapshot.agentId&&own.snapshot.organizationId===snapshot.organizationId&&own.snapshot.inspectionId===snapshot.inspectionId&&receipt?.operationId&&receipt.hash===fingerprint(records.get(row.id)));
+ });
+ await importHistory(store,{agentId:snapshot.agentId,rows,complete:true,evidence:decoded.evidence},now);
  return {source:{inspectionId:snapshot.inspectionId,agentId:snapshot.agentId,streetName:p.streetName||null,clientName:p.clientName||null,evidence:p.evidence},priorCards:decoded.records.map(r=>({recordId:r.record_id,status:r.status,exactDraft:r.exact_draft_wording,exactApproved:r.exact_approved_wording,exactSent:r.exact_sent_wording})),historyEvidence:decoded.evidence,instructions:['Write as me, not as InSites.','Use the verified street or client name naturally.','Keep it warm and lightly playful, with natural phrasing rather than forced jokes.','Never invent shared moments or tease about property defects.','Preserve already approved wording exactly; these guidelines apply to future drafts.','Do not invent interactions, outcomes or personal details.','Use the full prior wording to avoid repetition, not a rotating name/address template.','Owner review is required.'],deliveryEnabled:false};
 }

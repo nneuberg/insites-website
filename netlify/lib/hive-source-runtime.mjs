@@ -5,6 +5,7 @@ import {createHiveTransport} from './hive-transport.mjs';
 import {createSourceCache} from './hive-source-cache.mjs';
 import {createSourceView,HiveSourceDeferred} from './hive-source-view.mjs';
 import {createHiveSourceLease} from './hive-source-lease.mjs';
+import {observeCardBusinessPage} from './cards-business-source.mjs';
 // One company-scoped strong-consistency budget shared by every production caller.
 // Preview/local stores cannot consume or modify production checkpoints.
 export function sourceStore(context){
@@ -34,7 +35,7 @@ export function sourceServices(context,{seedOnly=false}={}){
   return {contacts,inspections,global};
  })();
  const view=createSourceView({cache,invalidatedIds:async()=>{const state=await barriers();if(state.global)throw new HiveSourceDeferred('Contact role authority awaits reconciliation');return state.contacts;},invalidatedInspectionIds:async()=>(await barriers()).inspections});
- return {store,cache,view,transport:sourceTransport(context,{seedOnly}),withLease:seedOnly?reconciledSeedLease(store):createHiveSourceLease({store,leaseMs:45000,workMs:25000}).withLease};
+ return {store,cache,view,transport:sourceTransport(context,{seedOnly}),withLease:seedOnly?reconciledSeedLease(store):createHiveSourceLease({store,leaseMs:45000,workMs:25000}).withLease,...(SOURCE_PLAN.cardBusinessObservationEnabled===true&&!seedOnly?{observeContactBusiness:args=>observeCardBusinessPage({store,...args})}:{})};
 }
 
 // One-time recovery of the operator-inspected, expired GET-only seed timeout.

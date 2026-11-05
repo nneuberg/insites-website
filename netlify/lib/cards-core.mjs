@@ -59,7 +59,7 @@ export const distinct=(s,agent,text,jobId)=>typeof text==='string'&&text.length<
 function reserve(s,agent,text,jobId){const key=hash(agent);s.history[key]??=[];if(!s.history[key].some(r=>r.normalized===normalize(text)&&r.jobId===jobId))s.history[key].push({jobId,text,normalized:normalize(text),sha256:hash(normalize(text))});}
 const audit=(s,id,action,now)=>s.audit.push({id,action,at:now,actor:'owner'});
 export const changed=(job,now)=>{job.revision++;job.updatedAt=now;job.projectionPending=true;};
-const revoke=job=>{job.approvedText=null;job.approval=null;};
+const revoke=job=>{if(job.approvedText)job.draftText=job.approvedText;job.approvedText=null;job.approval=null;};
 export async function importHistory(store,{agentId,rows,complete,evidence},now=Date.now()){
  if(!agentId||!Array.isArray(rows)||rows.length>5000||!evidence)throw Error('invalid_history');
  return mutate(store,s=>{
@@ -86,12 +86,22 @@ export async function stage(store,{eventId,snapshot,candidates,organization},now
     j.snapshot=structuredClone(snapshot);j.status='HOLD';j.error=qualification(snapshot,organization)||'snapshot_changed_review_required';revoke(j);changed(j,now);audit(s,id,'snapshot_changed_approval_revoked',now);
     return {status:'HOLD',jobId:id};
    }
+   // A renewed, exact history audit may restore a held draft to review, never to
+   // approval. Other holds (identity/address changes, collisions, unknown sends)
+   // remain explicit reconciliation work rather than automatic retries.
+   if(j.status==='HOLD'&&j.error==='history_unreconciled'&&!qualification(snapshot,organization)&&!officeQualification(s,snapshot,now)&&s.historyReady[hash(snapshot.agentId)]?.complete===true){
+    const usable=j.draftText&&!copyGroundingIssue(snapshot,j.draftText)&&distinct(s,snapshot.agentId,j.draftText,id);
+    j.status=usable?'AWAITING_APPROVAL':'MANUAL_REVIEW';j.error=usable?null:'copy_exhausted';revoke(j);changed(j,now);audit(s,id,'history_renewed_owner_review_required',now);
+    return {status:j.status,jobId:id};
+   }
    return {status:'duplicate',jobId:id};
   }
   let reason=qualification(snapshot,organization)||officeQualification(s,snapshot,now);
   if(s.historyInspections?.[fingerprint([snapshot.agentId,snapshot.inspectionId])]?.length)reason='inspection_card_history_requires_reconciliation';
   if(!s.historyReady[hash(snapshot.agentId)]?.complete)reason='history_unreconciled';
-  for(const j of Object.values(s.jobs))if(j.snapshot.organizationId===organization&&j.snapshot.inspectionId===snapshot.inspectionId&&j.snapshot.agentId!==snapshot.agentId){reason='changed_agent_manual_review';j.status='HOLD';j.error=reason;revoke(j);changed(j,now);audit(s,j.id,'agent_changed_approval_revoked',now);}
+  const conflicts=Object.values(s.jobs).filter(j=>j.snapshot.organizationId===organization&&j.snapshot.inspectionId===snapshot.inspectionId&&j.snapshot.agentId!==snapshot.agentId&&j.status!=='SUPERSEDED');
+  if(conflicts.some(j=>j.orderAttempt||j.orderId||j.sentAt))throw Error('order_attempt_requires_reconciliation');
+  for(const j of conflicts){reason='changed_agent_manual_review';j.status='HOLD';j.error=reason;revoke(j);changed(j,now);audit(s,j.id,'agent_changed_approval_revoked',now);}
   const draft=reason?null:candidates.slice(0,3).find(t=>!copyGroundingIssue(snapshot,t)&&distinct(s,snapshot.agentId,t,id))||null;
   if(draft)reserve(s,snapshot.agentId,draft,id);
   s.jobs[id]={id,eventId,automationInstanceId:event.instance,historyReconciled:s.historyReady[hash(snapshot.agentId)]?.complete===true,snapshot:structuredClone(snapshot),status:reason?'HOLD':draft?'AWAITING_APPROVAL':'MANUAL_REVIEW',error:reason||(!draft?'copy_exhausted':null),draftText:draft,approvedText:null,sentText:null,sentAt:null,approval:null,revision:1,createdAt:now,updatedAt:now,projectionPending:true,idempotencyKey:id,externalOrderNumber:'insites-'+id};
@@ -99,10 +109,11 @@ export async function stage(store,{eventId,snapshot,candidates,organization},now
  });
 }
 export const reviewFingerprint=(job,text,artwork)=>fingerprint({id:job.id,snapshot:job.snapshot,text,artwork});
-export async function review(store,{jobId,revision,text,artwork,reviewedFingerprint,approve},now=Date.now()){
+export async function review(store,{jobId,revision,text,artwork,reviewedFingerprint,approve,draftLeaseToken},now=Date.now()){
  return mutate(store,s=>{
   const j=s.jobs[jobId];if(j?.orderAttempt)throw Error('order_attempt_requires_reconciliation');if(!j||!['AWAITING_APPROVAL','APPROVED','MANUAL_REVIEW'].includes(j.status))throw Error('not_reviewable');
   if(j.revision!==revision)throw Error('stale_revision');
+  if(draftLeaseToken!==undefined&&(approve!==false||j.status!=='MANUAL_REVIEW'||j.draftLease?.token!==draftLeaseToken||j.draftLease?.revision!==revision||!Number.isFinite(j.draftLease?.until)||j.draftLease.until<=now))throw Error('draft_lease_invalid');
   if(qualification(j.snapshot,j.snapshot.organizationId)||officeQualification(s,j.snapshot,now)||!s.historyReady[hash(j.snapshot.agentId)]?.complete)throw Error('qualification_changed');
   const groundingIssue=copyGroundingIssue(j.snapshot,text);if(groundingIssue)throw Error(groundingIssue);
   if(!distinct(s,j.snapshot.agentId,text,jobId))throw Error('copy_collision');
@@ -110,6 +121,7 @@ export async function review(store,{jobId,revision,text,artwork,reviewedFingerpr
   reserve(s,j.snapshot.agentId,text,jobId);revoke(j);
   if(approve){j.approvedText=text;j.approval={by:'Neal',at:now,artwork:structuredClone(artwork),fingerprint:reviewedFingerprint};j.status='APPROVED';}
   else{j.draftText=text;j.status='AWAITING_APPROVAL';}
+  if(draftLeaseToken!==undefined)j.draftLease=null;
   changed(j,now);audit(s,jobId,approve?'approved':'edited_approval_revoked',now);return {status:j.status,deliveryEnabled:false};
  });
 }
