@@ -5,12 +5,15 @@ import {eligibleRecipients} from './review-policy.mjs';
 import {assertSourceAuthority} from './hive-source-cache.mjs';
 // Local cache discovery replaces polling; normal review follow-ups retain their
 // existing send/consent/idempotency path in engine.run({discover:false}).
-export async function runCachedReviewWorker({cache,view,engine,store,now=()=>Date.now(),enabled=false,limit=20,work=null,googleAvailable=false}){
+export async function runCachedReviewWorker({cache,view,engine,store,now=()=>Date.now(),enabled=false,limit=20,work=null,googleAvailable=false,scheduledPhase=null}){
  if(!enabled)return {deferred:true};
+ if(scheduledPhase&&(!work||!['followups','discovery'].includes(scheduledPhase)))throw Error('Invalid review source phase');
+ if(scheduledPhase==='followups')return {...await engine.run({discover:false}),sourceConsidered:0,sourceEnrolled:0,sourceDeferred:1,sourceWorkDeferred:true};
  let considered=0,enrolled=0,deferred=0,followups=null,sourceWorkDeferred=false,optionalPhase=null;
- // Budgeted scheduled runs settle existing work before optional new discovery.
+ // Callers without an explicit primary phase retain followups-first ordering.
  // Newly enrolled rows remain durable for the next normal run; no backfill/reset.
- if(work){
+ if(scheduledPhase==='discovery'){followups={processed:0,followupsDeferred:true};optionalPhase='discovery';}
+ if(work&&!scheduledPhase){
   followups=await engine.run({discover:false});
   if(followups.workDeferred||!work.canStart(9000))return {...followups,sourceConsidered:0,sourceEnrolled:0,sourceDeferred:1,sourceWorkDeferred:true};
   optionalPhase=await claimReviewOptionalPhase(store,{googleAvailable});
@@ -44,7 +47,7 @@ export async function runCachedReviewWorker({cache,view,engine,store,now=()=>Dat
    }catch(error){deferred++;if(isReviewDeadlineError(error,work)){sourceWorkDeferred=true;break;}const saved=await store.setJSON(key,{revision:row.revision,failed:true,nextAttemptAt:now()+900000});if(saved?.modified!==true)throw Error('Review retry checkpoint uncertain');}
   }
  }catch(error){deferred++;if(isReviewDeadlineError(error,work))sourceWorkDeferred=true;}
- // A stale cache/discovery failure must not starve previously qualified requests.
+ // Legacy combined callers still process qualified requests after discovery failure.
  if(!followups)followups=await engine.run({discover:false});
  return {...followups,sourceConsidered:considered,sourceEnrolled:enrolled,sourceDeferred:deferred,...(sourceWorkDeferred?{sourceWorkDeferred:true}:{}),...(optionalPhase?{optionalPhase}:{})};
 }
