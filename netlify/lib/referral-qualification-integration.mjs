@@ -19,13 +19,16 @@ export async function verifyClaimQualification({ledger,useId,facts,identityInput
  // For a concrete identity conflict, use established source references only to
  // revoke readiness; never guess/merge a new customer's identity.
  if(identity.status!=='usable-exact-identifier'||!identity.sourceContactIds.includes(facts.sourceContactId)||identity.primaryEmail!==String(facts.clientEmail||'').trim().toLowerCase()){
-  await ledger('holdCodeUse',{inspectionId:facts.inspectionId,reason:identity.reason||'Source identity mismatch'});return {held:true,reason:identity.reason||'Source identity mismatch'};
+  await ledger('holdCodeUse',{inspectionId:facts.inspectionId,observedAt,reason:identity.reason||'Source identity mismatch'});return {held:true,reason:identity.reason||'Source identity mismatch'};
  }
  const keys=customerReservationKeys(identity);
  const snapshot=qualificationSnapshot({facts:{...facts,canonicalCustomerId:keys.join('|'),identityVerified:true,completion},observedAt,launchCutoff}).state;
  // The ledger sets authoritative first-qualified/verification times under ScriptLock.
  const result=await ledger('recordClaimQualification',{useId,inspectionId:facts.inspectionId,sourceContactId:facts.sourceContactId,code:facts.code,observedAt,assessment:{qualified:snapshot.qualified,binding:snapshot.binding,customerKeys:keys,completion,facts,launchCutoff}});
- const refused=!result||typeof result!=='object'||Array.isArray(result)||Object.keys(result).length===0||result.held===true||result.qualified===false;
+ // Verified V18 success receipt. A stale observation is explicitly not a write
+ // acknowledgment, even if a separately read old ledger row remains ready.
+ const acknowledged=result&&typeof result==='object'&&!Array.isArray(result)&&result.updated===true&&result.stale!==true&&result.held!==true&&result.qualified===snapshot.qualified&&typeof result.ready==='boolean'&&(result.qualified===true?typeof result.firstQualifiedAt==='string'&&Number.isFinite(Date.parse(result.firstQualifiedAt)):result.firstQualifiedAt===null);
+ const refused=!acknowledged||result.qualified===false;
  return {...result,held:!snapshot.qualified||refused,reasons:snapshot.reasons};
 }
 
@@ -34,10 +37,11 @@ export async function verifyClaimQualification({ledger,useId,facts,identityInput
 // Public claim callers supply a token, never qualification facts or identity keys.
 export function qualifiedLedger({ledger,readCase,launchCutoff,now=()=>new Date().toISOString()}){
  async function refresh(useId){
+  const observedAt=now();
   let evidence;
   try{evidence=await readCase(useId);if(!evidence||evidence.useId!==useId)throw Error('Unavailable');}
-  catch{if(/^HIVE-[a-zA-Z0-9_-]{1,100}$/.test(useId))await ledger('holdCodeUse',{inspectionId:useId.slice(5),reason:'Current qualification evidence unavailable; review required'});throw Error('Current qualification evidence unavailable');}
-  return verifyClaimQualification({...evidence,ledger,useId,observedAt:now(),launchCutoff});
+  catch{if(/^HIVE-[a-zA-Z0-9_-]{1,100}$/.test(useId))await ledger('holdCodeUse',{inspectionId:useId.slice(5),observedAt,reason:'Current qualification evidence unavailable; review required'});throw Error('Current qualification evidence unavailable');}
+  return verifyClaimQualification({...evidence,ledger,useId,observedAt,launchCutoff});
  }
  return {refresh,async call(action,args){
   if(action==='claimCandidates'){

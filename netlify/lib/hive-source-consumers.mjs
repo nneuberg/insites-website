@@ -64,7 +64,8 @@ export async function reconcileChangedReferrals({inspectionIds,view,callLedger,c
   const verifiedLedger=async(action,data)=>{const result=await invoke(action,data);if(action==='holdCodeUse'?typeof result?.held!=='boolean':action==='recordCodeUse'&&typeof result?.matched!=='boolean'&&typeof result?.held!=='boolean')throw Error('Ledger write receipt uncertain');return result;};
   for(const job of jobs(inspectionIds).slice(0,maxItems)){
    try{
-    let inspection;try{inspection=await view.getInspection(job.id);await lease.assertHeld();if(inspection?.id!==job.id)throw Error('Cached inspection mismatch');}catch(error){await verifiedLedger('holdCodeUse',{inspectionId:job.id,reason:'Hive verification unavailable; retry required'});throw error;}
+    const observedAt=new Date(now()).toISOString();
+    let inspection;try{inspection=await view.getInspection(job.id);await lease.assertHeld();if(inspection?.id!==job.id)throw Error('Cached inspection mismatch');}catch(error){await verifiedLedger('holdCodeUse',{inspectionId:job.id,observedAt,reason:'Hive verification unavailable; retry required'});throw error;}
     const sourceKey=digest({inspection,eventId:job.eventId||'',version:job.revision??job.version??null,codes:snapshot.codes});
     const key='source-consumers/referrals/'+digest(job.id);let progress=await checkpointStore.get(key,{type:'json'});
     await lease.assertHeld();

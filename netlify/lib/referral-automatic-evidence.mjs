@@ -13,6 +13,8 @@ export function automaticQualifiedCaseReader({readHive,ledger,reviewStore,readCo
   if(inspection?.id!==inspectionId)throw Error('Inspection response mismatch');
   if(typeof inspection.refunded!=='boolean'||typeof inspection.disputed!=='boolean')throw Error('Refund and dispute source state unverified');
   const facts=inspectionFacts(inspection,{serviceIds:APPROVED_REFERRAL_FULL_SERVICE_IDS,now:now()});
+  // Current report/end state is a separate negative guard, not signed completion proof.
+  if(facts.completed!==true)throw Error('Current completion source state unverified');
   const snapshot=await ledger('codeSnapshot',{});
   if(!Array.isArray(snapshot?.codes)||!Array.isArray(snapshot.shares)||!Array.isArray(snapshot.uses))throw Error('Ledger snapshot incomplete');
   const owners=snapshot.codes.filter(c=>facts.codes.includes(c.Code)&&c['Assignment State']==='ASSIGNED'&&c['Hive State']==='VERIFIED');
@@ -27,7 +29,8 @@ export function automaticQualifiedCaseReader({readHive,ledger,reviewStore,readCo
   let storedEvent=null,pages=0;
   for await(const page of reviewStore.list({prefix:'review-events/',paginate:true})){
    if(++pages>maxEventPages)throw Error('Completion event scan incomplete');
-   for(const blob of page.blobs){const event=await reviewStore.get(blob.key,{type:'json'});if(event?.inspectionId===inspectionId&&blob.key==='review-events/'+hash(event.organizationId+':'+event.templateId+':'+event.instanceId)&&(!storedEvent||event.receivedAt>storedEvent.receivedAt))storedEvent=event;}
+   for(const blob of page.blobs){const event=await reviewStore.get(blob.key,{type:'json'});// Receipt time only rejects old evidence; it is never treated as completion time.
+   if(event?.inspectionId===inspectionId&&Number.isFinite(event.receivedAt)&&event.receivedAt>=Date.parse(inspection.ends_at)&&blob.key==='review-events/'+hash(event.organizationId+':'+event.templateId+':'+event.instanceId)&&(!storedEvent||event.receivedAt>storedEvent.receivedAt))storedEvent=event;}
   }
   const reward=await readPriorReward({useId,inspectionId,email:norm(facts.clientEmail),sourceContactIds:history.sourceContactIds||[facts.clientId],snapshot});
   // The separate authoritative reservation operation still enforces uniqueness

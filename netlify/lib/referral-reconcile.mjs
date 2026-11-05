@@ -5,10 +5,10 @@ export async function reconcileInspection({id,eventId='',read,callLedger,snapsho
  const observedAt=new Date(now()).toISOString();
  let inspection;
  try{inspection=await read('inspections/'+encodeURIComponent(id));if(inspection.id!==id)throw Error('Inspection mismatch');}
- catch(error){await callLedger('holdCodeUse',{inspectionId:id,reason:'Hive verification unavailable; retry required'});throw error;}
+ catch(error){await callLedger('holdCodeUse',{inspectionId:id,observedAt,reason:'Hive verification unavailable; retry required'});throw error;}
  const match=matchReferral(inspection,snapshot,{serviceIds,now:now()});
  if(!match.matched||!match.facts.clientId||!match.facts.clientEmail||match.holds.some(h=>h.includes('changed'))){
-  if(match.matched||match.hold)await callLedger('holdCodeUse',{inspectionId:id,reason:match.hold||match.holds?.join('; ')||'Referral attribution unavailable'});
+  if(match.matched||match.hold)await callLedger('holdCodeUse',{inspectionId:id,observedAt,reason:match.hold||match.holds?.join('; ')||'Referral attribution unavailable'});
   return {matched:false,held:!!match.hold||!!match.matched};
  }
  const result=await callLedger('recordCodeUse',{inspection:match.facts,observedAt,eventId,evidence:'Hive API: exact discount code; published report and elapsed end; full payment observed. New-client/refund/dispute evidence remains unverified.'});
