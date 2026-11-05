@@ -1,10 +1,12 @@
+import {createReviewScanProgress} from './review-scan-progress.mjs';
+import {isReviewDeadlineError} from './review-work-budget.mjs';
 import {allowsReviewIntake} from './review-intake.mjs';
 import {HiveUnavailable,hiveUnavailable} from './hive-incident.mjs';
 import {queueLowRating,deliverLowRating} from './review-low-rating.mjs';
 import {inReviewScope,excludedRequest,roleCutoff} from './review-scope.mjs';
 import {createHash,randomBytes} from 'node:crypto';
 import {AUDIENCES,DAY,ORIGIN,eligibleRecipients,referralDates,dueStage,validToken,REVIEW_CADENCE_VERSION} from './review-policy.mjs';
-export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.now(),hivePaused=false,hiveTransport=null,sourceContact=null,admission=null,ratingInvalidation=null,ratingCleanup=null}){
+export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.now(),hivePaused=false,hiveTransport=null,sourceContact=null,admission=null,ratingInvalidation=null,ratingCleanup=null,work=null}){
  const inLaunchScope=row=>inReviewScope(row,env);
  const projectionPaused=env.REVIEW_PROJECTION_PAUSED==='true';
  const hash=s=>createHash('sha256').update(s).digest('hex');
@@ -41,11 +43,12 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
  const save=row=>store.setJSON(rowKey(row.token),row);
  const needsLegacyHold=row=>!row.cadenceVersion&&!row.deliveryHold&&!row.projectionHold&&!row.endedAt&&!row.isTest&&now()<row.expiresAt&&[[0],[0,1]].some(s=>JSON.stringify(s)===JSON.stringify(row.sentStages));
  async function locked(key,fn){
+  work?.check();
   const owner=randomBytes(16).toString('hex'),lockKey='locks/'+hash(key),old=await store.getWithMetadata(lockKey,{type:'json'});
   if(old?.data.until>now())throw Error('Request busy; retry later');
   const lock=await store.setJSON(lockKey,{owner,until:now()+120000},old?{onlyIfMatch:old.etag}:{onlyIfNew:true});
   if(!lock.modified)throw Error('Request busy; retry later');
-  try{return await fn();}finally{
+  try{work?.check();return await fn();}finally{
    const held=await store.getWithMetadata(lockKey,{type:'json'});
    if(held?.data.owner===owner)await store.setJSON(lockKey,{owner,until:0},{onlyIfMatch:held.etag});
   }
@@ -107,7 +110,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
    if(result.held){row.deliveryHold={reason:result.reason,at:now()};delete row.preparingStage;await save(row);return;}
    row.admissionOwned=true;
    if(result.sent){row.sentStages=[...new Set([...row.sentStages,stage])];row.lastStageQueuedAt=result.sentAt;row.stageSentAt=row.stageSentAt||{};row.stageSentAt[stage]=row.stageSentAt[stage]||result.sentAt;delete row.preparingStage;delete row.stagePrepared;}else if(result.queued){row.preparingStage=stage;}
-   await save(row);return;
+   await save(row);return {workDeferred:result.deferred===true};
   }
   const member=await mc(row,undefined,'GET');
   if(member.merge_fields?.RVGDONE==='YES'||member.tags?.some(t=>t.name==='google reviewed')){row.googleReviewedAt=now();row.endedAt=now();await save(row);await finish(row);return;}
@@ -135,12 +138,14 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   row.sentStages=[...new Set([...row.sentStages,...Array.from({length:stage+1},(_,n)=>n)])];delete row.preparingStage;delete row.stagePrepared;await save(row);
  }
  async function enroll(inspection){
+  work?.check();
   if(env.REVIEW_NEW_INTAKE_ENABLED==='false')return {paused:true,intakeHeld:true};
   if(env.REVIEW_INTAKE_START_AFTER!==undefined&&!allowsReviewIntake(inspection,env.REVIEW_INTAKE_START_AFTER))return {added:0,intakeHeld:true};
   const cutoff=Date.parse(env.REVIEW_START_AFTER||'');
   if(projectionPaused||!Number.isFinite(cutoff)||env.REVIEW_ENABLED!=='true')return {paused:true};
   let added=0;
   for(const original of eligibleRecipients(inspection,now())){
+   work?.check();
    if(original.endedAt<cutoff)continue;
    // Already-enrolled people require no new source lookup. Recheck under the
    // existing lock below still handles concurrent enrollment safely.
@@ -181,12 +186,14 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   return {added};
  }
  async function process(token){
+  work?.check();
   if(projectionPaused||env.REVIEW_ENABLED!=='true'||excludedRequest(token))return;
   const initial=await get(token);if(!initial)return;
   return locked(initial.role+':'+initial.email,async()=>{
    const row=await get(token);
    if(row.isTest||!inLaunchScope(row))return;
    await deliverLowRating(row,{env,fetcher,save,now});
+   work?.check();
    if(row.projectionHold)return;
    if(row.endedAt){if(!row.finishSynced&&!row.suppressed)await finish(row);if(row.googleReviewedAt&&!row.hiveTagSynced)await syncHiveTag(row);return;}
    if(now()>=row.expiresAt){row.endedAt=row.expiresAt;await save(row);await finish(row);return;}
@@ -195,7 +202,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
    if(needsLegacyHold(row)){
     row.cadenceVersion='weekly-v1';row.legacyMigrationVersion='review-fields-v1';row.legacyNotBefore=now()+7*DAY;await save(row);return;
    }
-   const stage=dueStage(row,now());if(stage!==null&&stage>=0)await send(row,stage);
+   const stage=dueStage(row,now());if(stage!==null&&stage>=0)return send(row,stage);
   });
  }
  async function feedback(token,input){
@@ -220,6 +227,7 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   });
  }
  async function run({discover=true}={}){
+  work?.mark('followups');work?.check();
   if(projectionPaused||env.REVIEW_ENABLED!=='true'||!Number.isFinite(Date.parse(env.REVIEW_START_AFTER||'')))return {paused:true};
   if(ratingCleanup)try{await ratingCleanup();}catch{/* Expiry queue is durable; authorization still expires locally. */}
   let read=0,discoveryDeferred=false;
@@ -234,21 +242,30 @@ export function createEngine({store,env=process.env,fetcher=fetch,now=()=>Date.n
   await store.setJSON('scan',{cursor:list.next_cursor||null});
   }catch(error){if(!hiveUnavailable(error))throw error;discoveryDeferred=true;}
   }
-  let processed=0,hiveDeferred=0;
+  let processed=0,hiveDeferred=0,rowDeferred=0;
+  const scanProgress=work?await createReviewScanProgress(store):null;
+  try{
   for await(const page of store.list({prefix:'requests/',paginate:true})){
    for(const blob of page.blobs){
+    if(processed>=(admission?2:20))return {read,processed,discoveryDeferred,hiveDeferred,...(rowDeferred?{rowDeferred}:{}),newIntakeHeld:env.REVIEW_NEW_INTAKE_ENABLED==='false'};
+    if(scanProgress&&!scanProgress.includes(blob.key))continue;
+    if(work&&!work.canStart(2000))return {read,processed,discoveryDeferred,hiveDeferred,...(rowDeferred?{rowDeferred}:{}),newIntakeHeld:env.REVIEW_NEW_INTAKE_ENABLED==='false',workDeferred:true};
+    scanProgress?.visited(blob.key);
     if(excludedRequest(blob.key))continue;
     const token=blob.key.slice('requests/'.length),row=await get(token);
     if(!inLaunchScope(row))continue;
     if(!needsLegacyHold(row)&&row.lowRatingAlert?.state!=='pending'&&(row.finishSynced&&(!row.googleReviewedAt||row.hiveTagSynced)||!row.endedAt&&now()<row.expiresAt&&dueStage(row,now())===null))continue;
     // Already-finished rows waiting only on Hive must not consume the send budget.
     if((hivePaused||env.REVIEW_HIVE_TAG_WRITES_ENABLED==='false')&&row.endedAt&&row.finishSynced&&row.googleReviewedAt&&!row.hiveTagSynced&&row.lowRatingAlert?.state!=='pending'){hiveDeferred++;continue;}
-    if(processed>=(admission?2:20))return {read,processed,discoveryDeferred,hiveDeferred,newIntakeHeld:env.REVIEW_NEW_INTAKE_ENABLED==='false'};
-    try{await process(token);}catch(error){if(!hiveUnavailable(error))throw error;hiveDeferred++;}
+    try{const outcome=await process(token);if(outcome?.workDeferred){processed++;return {read,processed,discoveryDeferred,hiveDeferred,...(rowDeferred?{rowDeferred}:{}),newIntakeHeld:env.REVIEW_NEW_INTAKE_ENABLED==='false',workDeferred:true};}}catch(error){if(work&&error?.message==='Request busy; retry later'){rowDeferred++;continue;}if(isReviewDeadlineError(error,work))return {read,processed,discoveryDeferred,hiveDeferred,...(rowDeferred?{rowDeferred}:{}),newIntakeHeld:env.REVIEW_NEW_INTAKE_ENABLED==='false',workDeferred:true};if(!hiveUnavailable(error))throw error;hiveDeferred++;}
     processed++;
    }
   }
-  return {read,processed,discoveryDeferred,hiveDeferred,newIntakeHeld:env.REVIEW_NEW_INTAKE_ENABLED==='false'};
+  // Retain an exhausted exact-tail position so the next pass can cheaply wrap
+  // and give optional discovery/Google work a turn.
+  if(!work||work.canStart(9000))scanProgress?.complete();
+  return {read,processed,discoveryDeferred,hiveDeferred,...(rowDeferred?{rowDeferred}:{}),newIntakeHeld:env.REVIEW_NEW_INTAKE_ENABLED==='false'};
+  }finally{await scanProgress?.save();}
  }
  return {get,save,hive,mc,locked,enroll,process,feedback,confirmGoogle,run};
 }

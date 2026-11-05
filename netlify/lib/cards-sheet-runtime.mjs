@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {ledger} from './referral-transport.mjs';
 import {HISTORY_HEADERS,decodeHistory,projectCard} from './cards-history.mjs';
 import {readState,mutate,importHistory,fingerprint,changed} from './cards-core.mjs';
-export const CARD_HISTORY_PLAN=Object.freeze({enabled:false,version:'append-history-v1',deliveryEnabled:false});
+export const CARD_HISTORY_PLAN=Object.freeze({enabled:true,version:'append-history-v1',deliveryEnabled:false});
 export function createCardSheetClient({call=ledger,env=process.env}={}){
  return {readComplete:()=>call('cardHistorySnapshot',{},env,7500),append:input=>call('cardHistoryAppend',input,env,7500),lookup:operationId=>call('cardHistoryOperation',{operationId},env,7500)};
 }

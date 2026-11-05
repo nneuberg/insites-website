@@ -15,9 +15,9 @@ export function reviewStore(functionContext){
  const name=context==='production'?'insites-review-campaign':'insites-review-campaign-'+(functionContext?.deploy?.id||process.env.DEPLOY_ID||'local');
  return getStore({name,consistency:'strong'});
 }
-export function runtime(functionContext){
+export function runtime(functionContext,{work}={}){
  const store=reviewStore(functionContext),env=reviewEnvironment();let rating=null;
- const engine=createEngine({admission:MARKETING_ADMISSION.reviewOwnerEnabled?createReviewAdmission({config:MARKETING_ADMISSION,client:createAdmissionClient()}):null,store,env,hivePaused:HIVE_INCIDENT.paused||!SOURCE_PLAN.reviewEnrollmentEnabled,hiveTransport:sourceTransport(functionContext),sourceContact:SOURCE_PLAN.enabled?sourceServices(functionContext).view.getContact:null,ratingInvalidation:row=>rating?.invalidate(row),ratingCleanup:()=>rating?.cleanup()});
+ const engine=createEngine({work,fetcher:work?work.wrapFetch():fetch,admission:MARKETING_ADMISSION.reviewOwnerEnabled?createReviewAdmission({config:MARKETING_ADMISSION,work,client:createAdmissionClient({deadline:work?.deadline})}):null,store,env,hivePaused:HIVE_INCIDENT.paused||!SOURCE_PLAN.reviewEnrollmentEnabled,hiveTransport:sourceTransport(functionContext),sourceContact:SOURCE_PLAN.enabled?sourceServices(functionContext).view.getContact:null,ratingInvalidation:row=>rating?.invalidate(row),ratingCleanup:()=>rating?.cleanup()});
  if(MARKETING_ADMISSION.referralRatingProjection?.enabled===true){const deadline=Date.now()+20000;rating=createReferralRatingRuntime({config:MARKETING_ADMISSION,store,locked:engine.locked,provider:createMarketingMailchimp({env,deadline,positiveRatingInterest:MARKETING_ADMISSION.referralRatingProjection.interestId}),env,deadline});}
  return engine;
 }
