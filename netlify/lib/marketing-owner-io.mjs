@@ -1,8 +1,9 @@
+import {marketingProgramEnabled} from './marketing-program-gates.mjs';
 // Fixed I/O only. This module never calls the ledger or waits for Sheets.
 import {createHash} from 'node:crypto';
 import catalog from './marketing-program-catalog.cjs';
 import {operationId} from './marketing-admission-client.mjs';
-import {nativeNoBusiness} from './marketing-eligibility.mjs';
+import {nativeNoBusiness,noBusinessIdentityProof} from './marketing-eligibility.mjs';
 const WINDOW=168*3600000+900000;
 const root=s=>{const p=Object.values(s.people||{}).filter(p=>!p.parent);if(p.length!==1)throw Error('Exact identity root required');return p[0];};
 const aliases=s=>[...new Set(Object.values(s.people).map(p=>p.email).filter(Boolean))];
@@ -21,19 +22,20 @@ export function createOwnerIO({config,provider,eligibility,sourceNoBusiness,cach
   return{candidates,cursor:i>=rows.length?0:i};
  }
  async function preflight(state){
+  if(config.enabled!==true)return{kind:'hold'};
   if(ratingProjection?.enabled())try{await ratingProjection.cleanup();}catch{return {kind:'hold'};}
   const p=root(state);if(p.stops.length||p.quarantine.length)return{kind:'hold'};
   const reserved=Object.values(state.permits).find(a=>a.state==='reserved');if(reserved)return{kind:'abandon',permitId:reserved.id};
   if(Object.values(state.intents).some(i=>i.state==='queued'&&i.expiresAt<=now()))return{kind:'expire'};
   const manualAllowed=async()=>{const addresses=aliases(state);if(!addresses.length||addresses.length>4)return false;for(const address of addresses){const x=await manualExclusion(address);if(x.verified!==true||x.excluded)return false;}return true;};
   const intro=p.programs?.['nb-intro-v1'];
-  if(config.producerEnabled&&intro&&!intro.progressDoneAt&&!p.programStops?.['nb-intro-v1']?.length&&now()>=intro.anchorAt+70*catalog.DAY){
+  if(config.producerEnabled&&marketingProgramEnabled(config,'nb-intro-v1')&&intro&&!intro.progressDoneAt&&!p.programStops?.['nb-intro-v1']?.length&&now()>=intro.anchorAt+70*catalog.DAY){
    if(intro.classification?.completedAt){const program=intro.classification.branch==='observed-engaged'?'nb-evergreen-v1':'nb-permission-v1';if(p.programs[program])return{kind:'progressDone',program:'nb-intro-v1'};if(await manualAllowed()){const next=await enrollment(p.email,program);if(next.kind!=='hold')return next;}}
    const introResolved=catalog.programs['nb-intro-v1'].stages.every(stage=>{const i=Object.values(state.intents).find(i=>i.program==='nb-intro-v1'&&i.stage===stage.stage);return i&&(stage.kind==='original'?i.state==='sent':['sent','skipped'].includes(i.state));});
    if(!intro.classification&&introResolved&&config.completionExecutor?.verified===true&&config.completionExecutor.exclusiveInterestWriter===true&&await manualAllowed()){
-    const e=config.completionExecutor,proof=await sourceNoBusiness(p.email);
+    const e=config.completionExecutor,proof=await noBusinessIdentityProof(p,state,sourceNoBusiness,now);
     if(proof.stop)return{kind:'stop',reason:'business',programs:catalog.NB_PROGRAMS};
-    if(proof.eligible===true){const m=await provider.member(e.audienceId,p.email),c=catalog.classification;if(nativeNoBusiness(m))return{kind:'classify',binding:JSON.stringify(e),baseline:{verified:true,complete:m.interests?.[c.completeInterest],engaged:m.interests?.[c.engagedInterest],never:m.interests?.[c.neverInterest],memberKey:memberKey(e.audienceId,p.email),observedAt:now()}};}
+    if(proof.eligible===true){const m=await provider.member(e.audienceId,p.email),c=catalog.classification;if(nativeNoBusiness(m))return{kind:'classify',binding:JSON.stringify(e),baseline:{verified:true,complete:m.interests?.[c.completeInterest],engaged:m.interests?.[c.engagedInterest],never:m.interests?.[c.neverInterest],memberKey:memberKey(e.audienceId,p.email),observedAt:proof.observedAt}};}
    }
   }
   const permission=p.programs?.['nb-permission-v1'];if(permission&&!permission.progressDoneAt){const intents=Object.values(state.intents).filter(i=>i.program==='nb-permission-v1'),sent=Object.values(state.permits).filter(a=>intents.some(i=>i.id===a.intentId)&&a.state==='sent'),original=sent.find(a=>state.intents[a.intentId].stage==='o1'),latest=Math.max(0,...sent.map(a=>a.firstSentObservedAt));if(original&&now()>=Math.max(permission.anchorAt+74*catalog.DAY,original.firstSentObservedAt+14*catalog.DAY,latest+7*catalog.DAY)&&intents.every(i=>['sent','skipped','held','no_send','expired'].includes(i.state)))return{kind:'progressDone',program:'nb-permission-v1'};}
@@ -46,6 +48,7 @@ export function createOwnerIO({config,provider,eligibility,sourceNoBusiness,cach
   }
   const due=Object.values(state.intents).filter(i=>i.state==='queued'&&!p.programStops?.[i.program]?.length&&i.dueAt<=now()&&i.expiresAt>now()).sort((a,b)=>a.dueAt-b.dueAt||a.id.localeCompare(b.id));
   for(const i of due){
+   if(!marketingProgramEnabled(config,i.program))continue;
    const e=config.executors[i.program+':'+i.stage];if(!e?.verified)continue;
    if(catalog.NB_PROGRAMS.includes(i.program)&&!await manualAllowed())continue;
    if(i.program==='referral-customer-v1'&&ratingProjection){let projection;try{projection=await ratingProjection.reconcile({person:p,state,intent:i,executor:e});}catch{continue;}if(projection.projected!==true)continue;}

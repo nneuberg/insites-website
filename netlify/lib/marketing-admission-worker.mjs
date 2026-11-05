@@ -1,3 +1,4 @@
+import {marketingProgramEnabled} from './marketing-program-gates.mjs';
 import {createHash} from 'node:crypto';
 import {operationId} from './marketing-admission-client.mjs';
 const WINDOW=168*3600000+15*60000;
@@ -32,7 +33,7 @@ export async function runAdmission({config,client,provider,eligibility,producer=
    if(reserved){await client.command(personKey,'abandonReservation',{permitId:reserved.id},operationId('abandon',reserved.id));held++;continue;}
    const intents=Object.values(state.intents).filter(i=>i.state==='queued'&&!p.programStops?.[i.program]?.length&&i.dueAt<=now()&&i.expiresAt>now()).sort((a,b)=>a.dueAt-b.dueAt||a.id.localeCompare(b.id));
    let selected=null;
-   for(const intent of intents){const e=config.executors[intent.program+':'+intent.stage];if(!e||e.verified!==true)continue;const check=await eligibility({person:p,state,intent,executor:e});if(check.stop){await client.stop(personKey,check.stop.reason,check.stop.programs);continue;}if(check.deferUntil){await client.command(personKey,'deferQueued',{intentId:intent.id,notBefore:check.deferUntil});continue;}if(check.skip){await client.command(personKey,'skipUnsentStage',{intentId:intent.id,...check.skip});continue;}if(check.eligible===true){selected={intent,e,check};break;}}
+   for(const intent of intents){if(!marketingProgramEnabled(config,intent.program))continue;const e=config.executors[intent.program+':'+intent.stage];if(!e||e.verified!==true)continue;const check=await eligibility({person:p,state,intent,executor:e});if(check.stop){await client.stop(personKey,check.stop.reason,check.stop.programs);continue;}if(check.deferUntil){await client.command(personKey,'deferQueued',{intentId:intent.id,notBefore:check.deferUntil});continue;}if(check.skip){await client.command(personKey,'skipUnsentStage',{intentId:intent.id,...check.skip});continue;}if(check.eligible===true){selected={intent,e,check};break;}}
    if(!selected){held++;continue;}const {intent,e,check}=selected;
    const members=[];for(const address of addresses)for(const audience of config.audiences){if(now()>deadline-45000)throw Error('Preflight deadline');const member=await provider.member(audience,address);if(member)members.push({address,audience,member});}
    if(members.some(x=>['unsubscribed','cleaned'].includes(x.member.status))){await client.stop(personKey,members.some(x=>x.member.status==='cleaned')?'cleaned':'unsubscribe');held++;continue;}

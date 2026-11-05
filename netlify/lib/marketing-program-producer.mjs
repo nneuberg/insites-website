@@ -1,6 +1,7 @@
+import {marketingProgramEnabled} from './marketing-program-gates.mjs';
 import catalog from './marketing-program-catalog.cjs';
 import {operationId} from './marketing-admission-client.mjs';
-import {nativeNoBusiness} from './marketing-eligibility.mjs';
+import {nativeNoBusiness,noBusinessIdentityProof} from './marketing-eligibility.mjs';
 const groups=m=>{const i=m?.interests||{},c=catalog.classification;return{complete:i[c.completeInterest],engaged:i[c.engagedInterest],never:i[c.neverInterest]};};
 export function createProgramProducer({config,client,provider,sourceNoBusiness,now=()=>Date.now()}){
  async function enroll(email,program='nb-intro-v1'){
@@ -11,15 +12,15 @@ export function createProgramProducer({config,client,provider,sourceNoBusiness,n
   return client.command(personId,'enrollProgram',{personId,program,intentPrefix:operationId('program',personId,program),sourceProof:{schema:'hive-nobusiness-v1',verified:true,currentNoBusiness:true,conflicts:false,bookingStop:false,contactIds:proof.contactIds,observedAt:proof.observedAt}});
  }
  async function progress(personKey,state){
-  if(config.producerEnabled!==true)return{off:true};
+  if(config.producerEnabled!==true||!marketingProgramEnabled(config,'nb-intro-v1'))return{off:true};
   const person=Object.values(state.people).find(x=>!x.parent),intro=person?.programs?.['nb-intro-v1'];if(!person||person.stops.length||person.quarantine.length||person.programStops?.['nb-intro-v1']?.length)return{held:true};
   if(intro&&!intro.progressDoneAt&&now()>=intro.anchorAt+70*catalog.DAY){
    const c=intro.classification,e=config.completionExecutor;
    if(c?.completedAt){const program=c.branch==='observed-engaged'?'nb-evergreen-v1':'nb-permission-v1';await enroll(person.email,program);if((await client.snapshot(personKey)).state.people[person.id].programs?.[program])await client.command(personKey,'programProgressDone',{personId:person.id,program:'nb-intro-v1'});return{completed:true};}
    if(e?.verified!==true)return{held:true};
    if(!c){
-    const proof=await sourceNoBusiness(person.email);if(proof.stop){await client.stop(personKey,'business',catalog.NB_PROGRAMS);return{stopped:true};}if(proof.eligible!==true)return{held:true};
-    const m=await provider.member(e.audienceId,person.email);if(!nativeNoBusiness(m))return{held:true};const baseline={verified:true,...groups(m),memberKey:client.memberKey(e.audienceId,person.email),observedAt:now()};
+    const proof=await noBusinessIdentityProof(person,state,sourceNoBusiness,now);if(proof.stop){await client.stop(personKey,'business',catalog.NB_PROGRAMS);return{stopped:true};}if(proof.eligible!==true)return{held:true};
+    const m=await provider.member(e.audienceId,person.email);if(!nativeNoBusiness(m))return{held:true};const baseline={verified:true,...groups(m),memberKey:client.memberKey(e.audienceId,person.email),observedAt:proof.observedAt};
     const begin=await client.command(personKey,'beginClassification',{personId:person.id,binding:JSON.stringify(e),baseline},operationId('classify',personKey));if(begin.trigger)try{await provider.trigger(begin.executor,person.email);}catch{/* Uncertain zero-email attempt is never retriggered. */}return{attempted:begin.trigger};
    }
    const poll=await client.command(personKey,'beginClassificationPoll',{personId:person.id},operationId('classification-poll',personKey,c.polls));if(!poll.poll)return{held:true};

@@ -5,11 +5,45 @@ import {operationId} from './marketing-admission-client.mjs';
 import {ORIGIN,AUDIENCES,REVIEW_CADENCE_VERSION,googleReviewTiming} from './review-policy.mjs';
 const WINDOW=168*3600000+900000;
 const conflicting=new Set(['1st time buying agent','absent buying agent','absent selling agent','client','new selling agent','repeat buying agent','repeat selling agent','super buying agent','vip buying agent']);
-export function nativeNoBusiness(member){const tags=member.tags?.map(t=>t.name.toLowerCase());return member.status==='subscribed'&&Array.isArray(tags)&&tags.includes('no business')&&!tags.some(t=>conflicting.has(t))&&[0,'0'].includes(member.merge_fields?.MMERGE16);}
+export function nativeNoBusiness(member){
+ if(!member||typeof member!=='object'||Array.isArray(member)||!Array.isArray(member.tags)||member.tags.some(t=>!t||typeof t!=='object'||Array.isArray(t)||typeof t.name!=='string'||!t.name.trim()))return false;
+ const tags=member.tags.map(t=>t.name.trim().toLowerCase());
+ return member.status==='subscribed'&&tags.includes('no business')&&!tags.some(t=>conflicting.has(t))&&[0,'0'].includes(member.merge_fields?.MMERGE16);
+}
+// Every merged destination must retain current source eligibility. Do not let
+// an uncertain first alias hide a positive business stop on a later alias.
+export async function noBusinessIdentityProof(person,state,sourceNoBusiness,now){
+ const rows=state?.people&&typeof state.people==='object'&&!Array.isArray(state.people)?Object.values(state.people):[];
+ const roots=rows.filter(p=>p&&typeof p==='object'&&!p.parent);
+ if(!rows.length||roots.length!==1||roots[0].id!==person.id||roots[0].email!==person.email)return{eligible:false};
+ if(rows.some(p=>!p||typeof p!=='object'||typeof p.email!=='string'||p.email!==p.email.trim().toLowerCase()||!/^\S+@\S+\.\S+$/.test(p.email)||p.email.length>254))return{eligible:false};
+ const entries=Object.entries(state.people);
+ if(entries.some(([id,p])=>typeof p.id!=='string'||p.id!==id))return{eligible:false};
+ const rootId=roots[0].id;
+ for(const row of rows){
+  let current=row;const seen=new Set();
+  while(current.parent){
+   if(typeof current.parent!=='string'||seen.has(current.id)||!Object.hasOwn(state.people,current.parent))return{eligible:false};
+   seen.add(current.id);current=state.people[current.parent];
+  }
+  if(current.id!==rootId)return{eligible:false};
+ }
+ const addresses=[...new Set(rows.map(p=>p.email))];if(addresses.length>4)return{eligible:false};
+ let eligible=true,stop=false,observedAt=now();
+ for(const address of addresses){
+  let proof;try{proof=await sourceNoBusiness(address);}catch{eligible=false;continue;}
+  if(proof?.stop===true)stop=true;
+  const at=now();
+  if(proof?.eligible!==true||proof.stop!==false||!Number.isSafeInteger(proof.observedAt)||proof.observedAt>at||at-proof.observedAt>60000)eligible=false;
+  else observedAt=Math.min(observedAt,proof.observedAt);
+ }
+ const at=now();
+ return{eligible:eligible&&!stop&&observedAt<=at&&at-observedAt<=60000,stop,observedAt};
+}
 export function createMarketingEligibility({sourceNoBusiness,reviewRow,provider,client,sourceReferral=async()=>({eligible:false}),currentGoogleReview=async()=>null,now=()=>Date.now()}){
  return async({person,state,intent,executor})=>{
   if(catalog.NB_PROGRAMS.includes(intent.program)){
-   const proof=await sourceNoBusiness(person.email);if(proof.stop)return{stop:{reason:'business',programs:catalog.NB_PROGRAMS}};if(proof.eligible!==true)return{eligible:false};
+   const proof=await noBusinessIdentityProof(person,state,sourceNoBusiness,now);if(proof.stop)return{stop:{reason:'business',programs:catalog.NB_PROGRAMS}};if(proof.eligible!==true)return{eligible:false};
    const def=catalog.programs[intent.program],stage=def.stages.find(s=>s.stage===intent.stage);if(!stage)return{eligible:false};
    if(stage.previousResend){const prior=Object.values(state.intents).find(i=>i.program===intent.program&&i.stage===stage.previousResend),permit=Object.values(state.permits).find(p=>p.intentId===prior?.id&&p.state==='sent'),at=permit?.firstSentObservedAt||prior?.skippedAt;if(!at)return{eligible:false};const after=at+def.afterPreviousResendDays*catalog.DAY;if(now()<after)return{deferUntil:after};}
    if(stage.kind==='resend'){

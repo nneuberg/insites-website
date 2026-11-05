@@ -1,9 +1,10 @@
+import {marketingExecutorEnabled} from './marketing-program-gates.mjs';
 import {createHmac,createHash,timingSafeEqual} from 'node:crypto';
 const ACTIONS=new Set(['discover','preflight','receipt','classificationReceipt','trigger','installationProbe','referralRatingMetadata','installationReadiness','installationSourceConflict','photographyReadiness']);
 export const signOwnerRequest=(secret,ts,body)=>createHmac('sha256',secret).update('marketing-owner-io-v1\0'+ts+'.'+body).digest('hex');
 export async function ownerProxy(request,{config,secret,io,provider,claims,now=()=>Date.now(),production=false,loadServices,loadMetadata,loadReadiness,loadSourceConflict,loadPhotographyReadiness,referralLastMile=async()=>null}){
  const json=(x,status=200)=>Response.json(x,{status,headers:{'Cache-Control':'no-store'}});
- const ownerEnabled=config.appsScriptOwnerEnabled===true&&config.allMarketingWritersCovered===true&&config.cutover?.verified===true&&Number.isSafeInteger(config.cutover.at)&&config.cutover.at>0&&config.cutover.at<=now();
+ const ownerEnabled=config.enabled===true&&config.appsScriptOwnerEnabled===true&&config.allMarketingWritersCovered===true&&config.cutover?.verified===true&&Number.isSafeInteger(config.cutover.at)&&config.cutover.at>0&&config.cutover.at<=now();
  // Real production requests authenticate before the OFF gate solely to admit the inert probe.
  if(!ownerEnabled&&production!==true)return json({off:true});
  if(request.method!=='POST'||!secret)return json({error:'unauthorized'},401);
@@ -23,7 +24,7 @@ export async function ownerProxy(request,{config,secret,io,provider,claims,now=(
   if(production!==true)return json({error:'unauthorized'},401);
   if(Object.keys(body).length!==3||Object.keys(d).length!==1||!Object.hasOwn(d,'probeId')||typeof d.probeId!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(d.probeId))return json({error:'invalid'},400);
   const flags=['enabled','appsScriptOwnerEnabled','terminalCallbackEnabled','producerEnabled','reviewOwnerEnabled','allMarketingWritersCovered'];
-  if(flags.some(k=>config[k]!==false)||config.referralOwnerEnabled===true||config.referralRatingProjection?.enabled===true||config.reviewReferralPolicy?.enabled===true||config.cutover?.verified!==false||config.cutover.at!==null)return json({error:'installation_not_off'},409);
+  if(flags.some(k=>config[k]!==false)||config.noBusinessOwnerEnabled===true||config.referralOwnerEnabled===true||config.referralRatingProjection?.enabled===true||config.reviewReferralPolicy?.enabled===true||config.cutover?.verified!==false||config.cutover.at!==null)return json({error:'installation_not_off'},409);
   if(body.action==='installationSourceConflict'){
    // One private conflict GET through shared quota/lease; never load send services.
    if(config.referralOwnerEnabled!==false||config.referralRatingProjection?.enabled!==false||config.reviewReferralPolicy?.enabled!==false||typeof loadSourceConflict!=='function')return json({error:'installation_not_off'},409);
@@ -42,6 +43,7 @@ export async function ownerProxy(request,{config,secret,io,provider,claims,now=(
   return json({version:1,action:'installationProbe',probeId:d.probeId,authenticated:true,off:true});
  }
  if(!ownerEnabled)return json({off:true});
+ if(body.action==='trigger'&&!marketingExecutorEnabled(config,d.executorKey))return json({off:true});
  try{
   if(loadServices)({io,provider,claims,referralLastMile=async()=>null}=await loadServices());
   if(body.action==='trigger'){

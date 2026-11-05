@@ -16,6 +16,7 @@ export const MARKETING_ADMISSION=Object.freeze({
   "appsScriptOwnerEnabled": true,
   "terminalCallbackEnabled": false,
   "producerEnabled": false,
+  "noBusinessOwnerEnabled": false,
   "reviewOwnerEnabled": true,
   "allMarketingWritersCovered": true,
   "cutover": {
