@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {inspectionFacts} from './referral-hive.mjs';
-import {customerHistory} from './referral-customer-history.mjs';
+import {customerHistory,sourceTimestampOK} from './referral-customer-history.mjs';
 import {APPROVED_REFERRAL_FULL_SERVICE_IDS} from './referral-service-catalog.mjs';
 const norm=x=>String(x||'').trim().toLowerCase();
 const hash=x=>createHash('sha256').update(x).digest('hex');
@@ -23,7 +23,7 @@ export function automaticQualifiedCaseReader({readHive,ledger,reviewStore,readCo
   if(prior.length>1||prior.some(u=>u.Code!==owner.Code||String(u['Client ID'])!==facts.clientId))throw Error('Attribution changed');
   const consent=snapshot.shares.some(s=>s.Code===owner.Code&&norm(s['Referrer Email'])===norm(owner['Referrer Email'])&&s['Terms Version']==='2026-10-04-personal-share'&&Number.isFinite(Date.parse(s['Consent At']))&&Date.parse(s['Consent At'])<=Date.parse(facts.bookedAt));
   const policy=await readCoverage();
-  const fresh=policy?.verified===true&&typeof policy.reference==='string'&&!!policy.reference.trim()&&Number.isFinite(Date.parse(policy.validUntil))&&Date.parse(policy.validUntil)>now();
+  const fresh=policy?.verified===true&&typeof policy.reference==='string'&&!!policy.reference.trim()&&sourceTimestampOK(policy.validUntil)&&Number.isFinite(Date.parse(policy.validUntil))&&Date.parse(policy.validUntil)>now();
   if(!fresh)throw Error('Source coverage not verified');
   const history=await customerHistory({read:readHive,email:facts.clientEmail,sourceContactIds:[facts.clientId],currentInspectionId:inspectionId,before:facts.bookedAt,coverage:policy.historyCoverage,legacyLookup});
   let storedEvent=null,pages=0;
@@ -36,6 +36,7 @@ export function automaticQualifiedCaseReader({readHive,ledger,reviewStore,readCo
   // The separate authoritative reservation operation still enforces uniqueness
   // atomically. This read cannot replace that operation or promise global identity.
   const noPriorReward=reward?.verified===true&&reward.useId===useId&&reward.email===norm(facts.clientEmail)&&reward.clear===true&&typeof reward.reference==='string'&&!!reward.reference.trim();
+  if(!sourceTimestampOK(policy.validUntil)||Date.parse(policy.validUntil)<=now())throw Error('Source coverage expired during qualification');
   return {useId,identityInput:{email:facts.clientEmail,sourceContactIds:history.sourceContactIds||[facts.clientId]},storedEvent,facts:{inspectionId,sourceContactId:facts.clientId,clientEmail:facts.clientEmail,referrerId:owner['Referrer ID'],code:owner.Code,bookingCreatedAt:facts.bookedAt,bookingProvenanceVerified:policy.bookingCreatedAtVerified===true&&Date.parse(owner['Assigned At'])<Date.parse(facts.bookedAt),newCustomerVerified:history.newClient===true,consumerReferrerVerified:consent&&policy.consentDefinesConsumerEligibility===true,codeAssociationVerified:true,distinctPeopleVerified:norm(owner['Referrer Email'])!==norm(facts.clientEmail),fullyPaid:facts.paid,active:facts.canceled===false,noPriorRewardVerified:noPriorReward,serviceIds:facts.serviceIds,refundOrDispute:inspection.refunded===true||inspection.disputed===true}};
  };
 }
