@@ -4,3 +4,6 @@ package.json
 package-lock.json
 pnpm-lock.yaml
 GALLERY-SETUP.md
+
+# Operational Apps Script source and deployment review packets are not public assets.
+operations/

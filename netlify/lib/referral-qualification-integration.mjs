@@ -25,7 +25,8 @@ export async function verifyClaimQualification({ledger,useId,facts,identityInput
  const snapshot=qualificationSnapshot({facts:{...facts,canonicalCustomerId:keys.join('|'),identityVerified:true,completion},observedAt,launchCutoff}).state;
  // The ledger sets authoritative first-qualified/verification times under ScriptLock.
  const result=await ledger('recordClaimQualification',{useId,inspectionId:facts.inspectionId,sourceContactId:facts.sourceContactId,code:facts.code,observedAt,assessment:{qualified:snapshot.qualified,binding:snapshot.binding,customerKeys:keys,completion,facts,launchCutoff}});
- return {...result,held:!snapshot.qualified,reasons:snapshot.reasons};
+ const refused=!result||typeof result!=='object'||Array.isArray(result)||Object.keys(result).length===0||result.held===true||result.qualified===false;
+ return {...result,held:!snapshot.qualified||refused,reasons:snapshot.reasons};
 }
 
 // Server composition only: readCase must fetch current authenticated evidence.
@@ -41,7 +42,7 @@ export function qualifiedLedger({ledger,readCase,launchCutoff,now=()=>new Date()
  return {refresh,async call(action,args){
   if(action==='claimCandidates'){
    const page=await ledger('qualificationCandidates',args),items=[];
-   for(const item of page.items){try{await refresh(item.useId);const candidate=await ledger('claimCandidate',item);if(candidate.ready)items.push(item);}catch{/* Missing evidence stays ineligible; no purchase or invitation. */}}
+   for(const item of page.items){try{const checked=await refresh(item.useId);if(checked.held)continue;const candidate=await ledger('claimCandidate',item);if(candidate.ready)items.push(item);}catch{/* Missing evidence stays ineligible; no purchase or invitation. */}}
    return {items,next:page.next||''};
   }
   if(action==='claimCandidate'||action==='reserveClaimReward'){

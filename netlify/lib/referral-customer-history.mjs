@@ -8,7 +8,16 @@ export async function customerHistory({read,email,sourceContactIds,verifiedAlias
  if(identity.status!=='usable-exact-identifier')return unknown(identity.reason);
  const cutoff=Date.parse(before);if(!Number.isFinite(cutoff)||!idOK(currentInspectionId))return unknown('Booking cutoff or current inspection missing');
  let pages=0;const contactIds=new Set(identity.sourceContactIds);let unresolved=false;
- async function all(path,consume){let cursor=null;const seen=new Set();do{if(++pages>maxPages)throw Error('History page budget reached');const url=new URL(path,'https://local.invalid/');if(cursor)url.searchParams.set('cursor',cursor);const page=await read(url.pathname.slice(1)+url.search);if(!Array.isArray(page?.data))throw Error('Invalid history page');for(const row of page.data)await consume(row);const next=page.next_cursor;if(next!==null&&next!==undefined&&typeof next!=='string')throw Error('Invalid cursor');if(next&&seen.has(next))throw Error('Repeated cursor');if(next)seen.add(next);cursor=next||null;}while(cursor)}
+ async function all(path,consume){let cursor=null,total=null,count=0;const seen=new Set(),ids=new Set();do{
+  if(++pages>maxPages)throw Error('History page budget reached');
+  const url=new URL(path,'https://local.invalid/');if(cursor)url.searchParams.set('cursor',cursor);
+  const page=await read(url.pathname.slice(1)+url.search);
+  if(!Array.isArray(page?.data)||!Object.hasOwn(page,'next_cursor')||(page.next_cursor!==null&&(typeof page.next_cursor!=='string'||!page.next_cursor))||!Number.isSafeInteger(page.total)||page.total<0||(total!==null&&total!==page.total))throw Error('Invalid or changing history coverage');
+  total=page.total;
+  for(const row of page.data){if(!idOK(row?.id)||ids.has(row.id))throw Error('Duplicate history identity');ids.add(row.id);count++;await consume(row);}
+  if(count>total)throw Error('History count exceeded');
+  const next=page.next_cursor;if(next&&seen.has(next))throw Error('Repeated cursor');if(next)seen.add(next);cursor=next;
+ }while(cursor);if(count!==total)throw Error('History count incomplete');}
  try{
   for(const address of identity.dedupEmails){await all('contacts?'+new URLSearchParams({email:address,limit:'200'}),row=>{if(!idOK(row.id)||norm(row.email)!==address)throw Error('Exact contact lookup mismatch');contactIds.add(row.id);if(contactIds.size>maxContacts)throw Error('Contact budget reached')})}
   const seenInspections=new Set();let prior=false;
@@ -23,12 +32,12 @@ export async function customerHistory({read,email,sourceContactIds,verifiedAlias
    if(starts<cutoff){if(row.status==='confirmed'&&row.confirmed===true)prior=true;else unresolved=true;}
   })}
   if(prior)return {newClient:false,reason:'Prior confirmed client inspection',sourceContactIds:[...contactIds]};
-  const legacy=await legacyLookup({emails:identity.dedupEmails,before:new Date(cutoff).toISOString()});
+  const legacy=await legacyLookup({emails:identity.dedupEmails,before:new Date(cutoff).toISOString(),currentInspectionId,sourceContactIds:[...contactIds]});
   const legacyBound=legacy?.before===new Date(cutoff).toISOString()&&Array.isArray(legacy.emails)&&JSON.stringify([...legacy.emails].sort())===JSON.stringify(identity.dedupEmails)&&typeof legacy.reference==='string'&&!!legacy.reference.trim();
   if(legacyBound&&legacy.priorCustomer===true)return {newClient:false,reason:'Prior verified legacy customer',evidenceReference:legacy.reference,sourceContactIds:[...contactIds]};
   if(unresolved)return unknown('Prior inspection lifecycle or date unresolved');
-  if(coverage.exactEmailLookupVerified!==true||coverage.currentHistoryComplete!==true||coverage.deletedBehaviorVerified!==true||typeof coverage.reference!=='string'||!coverage.reference.trim())return unknown('Current source coverage unverified');
-  if(!legacyBound||legacy.complete!==true||legacy.priorCustomer!==false)return unknown('Legacy source coverage unverified');
-  return {newClient:true,reason:'No prior customer within verified exact-email and source history',sourceContactIds:[...contactIds],evidenceReference:coverage.reference+'; '+legacy.reference};
+  if(coverage.exactEmailLookupVerified!==true||coverage.currentHistoryComplete!==true||coverage.scope!=='exact-email-index'||!Number.isFinite(Date.parse(coverage.through))||Date.parse(coverage.through)<cutoff||coverage.deletedBehaviorVerified!==true||typeof coverage.reference!=='string'||!coverage.reference.trim())return unknown('Current source coverage unverified');
+  if(!legacyBound||legacy.complete!==true||legacy.coverageScope!=='exact-email-index'||legacy.priorCustomer!==false)return unknown('Legacy source coverage unverified');
+  return {newClient:true,coverageScope:'exact-email-index',globalPersonHistoryComplete:false,reason:'No prior customer within verified exact-email and source history',sourceContactIds:[...contactIds],evidenceReference:coverage.reference+'; '+legacy.reference};
  }catch{return unknown('History lookup incomplete or unavailable');}
 }

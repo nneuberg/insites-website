@@ -1,6 +1,6 @@
 // Local-only assessment. Email is a practical identifier, not proof of global person uniqueness.
 const normalize=v=>typeof v==='string'?v.trim().toLowerCase():'';
-const valid=v=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+const valid=v=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)&&!/@(?:no-email\.hiveinspect\.com|[^@]*\.invalid)$/.test(v);
 export function assessReferralIdentity({email,sourceContactIds=[],verifiedAliases=[],sharedEmailEvidence=null,sourceConflictEvidence=null,lookalikes=[]}){
  const primaryEmail=normalize(email);
  if(!valid(primaryEmail)||!Array.isArray(sourceContactIds)||!sourceContactIds.length||sourceContactIds.some(id=>typeof id!=='string'||!id.trim()))return {status:'held',reason:'Exact email and source contact reference required'};

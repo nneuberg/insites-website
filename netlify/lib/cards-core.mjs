@@ -1,3 +1,4 @@
+import {copyGroundingIssue,copySkeleton} from './cards-copy.mjs';
 import {createHash,createHmac,timingSafeEqual,randomUUID} from 'node:crypto';
 export const hash=value=>createHash('sha256').update(value).digest('hex');
 const canonical=x=>Array.isArray(x)?x.map(canonical):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,canonical(x[k])])):x;
@@ -51,10 +52,10 @@ export function qualification(s,organization){
 function officeQualification(s,snapshot,now){if(!snapshot.officeHash)return null;const a=s.offices?.[hash(snapshot.agentId)];return !a||a.officeHash!==snapshot.officeHash||a.doNotMail!==false||a.verifiedAt>now||now-a.verifiedAt>30*86400000?'office_review_required':null;}
 const grams=t=>new Set(Array.from({length:Math.max(0,t.length-2)},(_,i)=>t.slice(i,i+3)));
 export function similar(a,b){
- if(a===b)return true;const x=grams(a),y=grams(b);if(!x.size||!y.size)return false;
+ if(a===b||copySkeleton(a)===copySkeleton(b))return true;const x=grams(a),y=grams(b);if(!x.size||!y.size)return false;
  return 2*[...x].filter(g=>y.has(g)).length/(x.size+y.size)>=.82;
 }
-const distinct=(s,agent,text,jobId)=>typeof text==='string'&&text.length<=1000&&normalize(text)&&!(s.history[hash(agent)]||[]).some(r=>r.jobId!==jobId&&similar(normalize(text),r.normalized));
+export const distinct=(s,agent,text,jobId)=>typeof text==='string'&&text.length<=1000&&normalize(text)&&!(s.history[hash(agent)]||[]).some(r=>r.jobId!==jobId&&similar(normalize(text),r.normalized));
 function reserve(s,agent,text,jobId){const key=hash(agent);s.history[key]??=[];if(!s.history[key].some(r=>r.normalized===normalize(text)&&r.jobId===jobId))s.history[key].push({jobId,text,normalized:normalize(text),sha256:hash(normalize(text))});}
 const audit=(s,id,action,now)=>s.audit.push({id,action,at:now,actor:'owner'});
 export const changed=(job,now)=>{job.revision++;job.updatedAt=now;job.projectionPending=true;};
@@ -63,11 +64,12 @@ export async function importHistory(store,{agentId,rows,complete,evidence},now=D
  if(!agentId||!Array.isArray(rows)||rows.length>5000||!evidence)throw Error('invalid_history');
  return mutate(store,s=>{
   for(const row of rows){if(!row.id||typeof row.text!=='string'||!normalize(row.text)||row.text.length>1000)throw Error('invalid_history_row');
+   if(row.inspectionId){s.historyInspections??={};const key=fingerprint([agentId,row.inspectionId]);s.historyInspections[key]??=[];if(!s.historyInspections[key].includes(row.id))s.historyInspections[key].push(row.id);}
    const own=s.jobs[row.id];const self=own?.snapshot.agentId===agentId&&[own.draftText,own.approvedText,own.sentText].includes(row.text)?own.id:null;
-   for(const j of Object.values(s.jobs))if(j.id!==self&&j.snapshot.agentId===agentId&&[j.draftText,j.approvedText].filter(Boolean).some(t=>similar(normalize(t),normalize(row.text)))){j.status='HOLD';j.error='late_history_collision';revoke(j);changed(j,now);}
+   for(const j of Object.values(s.jobs))if(!j.orderAttempt&&!j.orderId&&!j.sentAt&&j.id!==self&&j.snapshot.agentId===agentId&&[j.draftText,j.approvedText].filter(Boolean).some(t=>similar(normalize(t),normalize(row.text)))){j.status='HOLD';j.error='late_history_collision';revoke(j);changed(j,now);}
    reserve(s,agentId,row.text,self||'history:'+row.id);
   }
-  for(const j of Object.values(s.jobs))if(j.snapshot.agentId===agentId){j.historyReconciled=complete===true;if(!complete){j.status='HOLD';j.error='history_unreconciled';revoke(j);}changed(j,now);}
+  for(const j of Object.values(s.jobs))if(j.snapshot.agentId===agentId){const readinessChanged=j.historyReconciled!==(complete===true);j.historyReconciled=complete===true;if(!complete&&!j.orderAttempt&&!j.orderId&&!j.sentAt){j.status='HOLD';j.error='history_unreconciled';revoke(j);}if(readinessChanged)changed(j,now);}
   s.historyReady[hash(agentId)]={complete:complete===true,evidence,at:now};audit(s,agentId,'history_import',now);return {status:'history_recorded'};
  });
 }
@@ -87,9 +89,10 @@ export async function stage(store,{eventId,snapshot,candidates,organization},now
    return {status:'duplicate',jobId:id};
   }
   let reason=qualification(snapshot,organization)||officeQualification(s,snapshot,now);
+  if(s.historyInspections?.[fingerprint([snapshot.agentId,snapshot.inspectionId])]?.length)reason='inspection_card_history_requires_reconciliation';
   if(!s.historyReady[hash(snapshot.agentId)]?.complete)reason='history_unreconciled';
   for(const j of Object.values(s.jobs))if(j.snapshot.organizationId===organization&&j.snapshot.inspectionId===snapshot.inspectionId&&j.snapshot.agentId!==snapshot.agentId){reason='changed_agent_manual_review';j.status='HOLD';j.error=reason;revoke(j);changed(j,now);audit(s,j.id,'agent_changed_approval_revoked',now);}
-  const draft=reason?null:candidates.slice(0,3).find(t=>distinct(s,snapshot.agentId,t,id))||null;
+  const draft=reason?null:candidates.slice(0,3).find(t=>!copyGroundingIssue(snapshot,t)&&distinct(s,snapshot.agentId,t,id))||null;
   if(draft)reserve(s,snapshot.agentId,draft,id);
   s.jobs[id]={id,eventId,automationInstanceId:event.instance,historyReconciled:s.historyReady[hash(snapshot.agentId)]?.complete===true,snapshot:structuredClone(snapshot),status:reason?'HOLD':draft?'AWAITING_APPROVAL':'MANUAL_REVIEW',error:reason||(!draft?'copy_exhausted':null),draftText:draft,approvedText:null,sentText:null,sentAt:null,approval:null,revision:1,createdAt:now,updatedAt:now,projectionPending:true,idempotencyKey:id,externalOrderNumber:'insites-'+id};
   event.status='DONE';event.jobId=id;audit(s,id,'staged',now);return {status:s.jobs[id].status,jobId:id};
@@ -101,6 +104,7 @@ export async function review(store,{jobId,revision,text,artwork,reviewedFingerpr
   const j=s.jobs[jobId];if(j?.orderAttempt)throw Error('order_attempt_requires_reconciliation');if(!j||!['AWAITING_APPROVAL','APPROVED','MANUAL_REVIEW'].includes(j.status))throw Error('not_reviewable');
   if(j.revision!==revision)throw Error('stale_revision');
   if(qualification(j.snapshot,j.snapshot.organizationId)||officeQualification(s,j.snapshot,now)||!s.historyReady[hash(j.snapshot.agentId)]?.complete)throw Error('qualification_changed');
+  const groundingIssue=copyGroundingIssue(j.snapshot,text);if(groundingIssue)throw Error(groundingIssue);
   if(!distinct(s,j.snapshot.agentId,text,jobId))throw Error('copy_collision');
   if(approve&&(!artwork?.id||!artwork?.revision||!artwork?.templateId||!Number.isInteger(artwork?.messagePage)||artwork.messagePage<1||!equal(reviewFingerprint(j,text,artwork),reviewedFingerprint)))throw Error('review_changed');
   reserve(s,j.snapshot.agentId,text,jobId);revoke(j);
@@ -126,11 +130,12 @@ export async function reevaluate(store,{jobId,revision,snapshot,candidates,organ
   if(j.revision!==revision)throw Error('stale_revision');
   if(!snapshot||!Array.isArray(candidates)||snapshot.agentId!==j.snapshot.agentId||snapshot.inspectionId!==j.snapshot.inspectionId||snapshot.organizationId!==j.snapshot.organizationId)throw Error('recovery_identity_changed');
   let reason=qualification(snapshot,organization)||officeQualification(s,snapshot,now);
+  if(s.historyInspections?.[fingerprint([snapshot.agentId,snapshot.inspectionId])]?.some(id=>id!==j.id&&!id.startsWith(j.id+':v')))reason='inspection_card_history_requires_reconciliation';
   if(s.historyReady[hash(snapshot.agentId)]?.complete!==true)reason='history_unreconciled';
   if(Object.values(s.jobs).some(other=>other.id!==j.id&&other.status!=='SUPERSEDED'&&other.snapshot.inspectionId===snapshot.inspectionId&&other.snapshot.agentId!==snapshot.agentId))reason='changed_agent_manual_review';
   j.priorSnapshots??=[];j.priorSnapshots.push({revision:j.revision,snapshot:j.snapshot,status:j.status,error:j.error,approval:j.approval,draftText:j.draftText});
   j.snapshot=structuredClone(snapshot);j.historyReconciled=s.historyReady[hash(snapshot.agentId)]?.complete===true;revoke(j);
-  const draft=reason?null:candidates.slice(0,3).find(t=>distinct(s,snapshot.agentId,t,j.id))||null;
+  const draft=reason?null:candidates.slice(0,3).find(t=>!copyGroundingIssue(snapshot,t)&&distinct(s,snapshot.agentId,t,j.id))||null;
   if(draft)reserve(s,snapshot.agentId,draft,j.id);
   j.draftText=draft;j.status=reason?'HOLD':draft?'AWAITING_APPROVAL':'MANUAL_REVIEW';j.error=reason||(!draft?'copy_exhausted':null);changed(j,now);audit(s,j.id,'hold_reevaluated_approval_revoked',now);
   return {status:j.status,jobId:j.id,deliveryEnabled:false};
@@ -152,7 +157,7 @@ export async function claimProjection(store,now=Date.now()){
  return mutate(store,s=>{
   // No automatic lease expiry: an ambiguous Sheets write must be reconciled by
   // the same serialized run/owner before another record can claim a row.
-  if(s.projectionLease)return {unchanged:true,status:'projection_busy_reconcile_required'};
+  if(s.projectionLease||s.historyWrite||s.sheetAppend)return {unchanged:true,status:'projection_busy_reconcile_required'};
   const j=Object.values(s.jobs).find(j=>j.projectionPending);if(!j)return {unchanged:true,status:'idle'};
   const token=randomUUID();s.projectionLease={token,jobId:j.id,revision:j.revision,at:now,until:now+300000,snapshot:structuredClone(j)};return {status:'claimed',token,job:structuredClone(j)};
  });
