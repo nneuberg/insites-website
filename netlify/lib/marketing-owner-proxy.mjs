@@ -1,7 +1,7 @@
 import {createHmac,createHash,timingSafeEqual} from 'node:crypto';
-const ACTIONS=new Set(['discover','preflight','receipt','classificationReceipt','trigger','installationProbe','referralRatingMetadata','installationReadiness','installationSourceConflict']);
+const ACTIONS=new Set(['discover','preflight','receipt','classificationReceipt','trigger','installationProbe','referralRatingMetadata','installationReadiness','installationSourceConflict','photographyReadiness']);
 export const signOwnerRequest=(secret,ts,body)=>createHmac('sha256',secret).update('marketing-owner-io-v1\0'+ts+'.'+body).digest('hex');
-export async function ownerProxy(request,{config,secret,io,provider,claims,now=()=>Date.now(),production=false,loadServices,loadMetadata,loadReadiness,loadSourceConflict,referralLastMile=async()=>null}){
+export async function ownerProxy(request,{config,secret,io,provider,claims,now=()=>Date.now(),production=false,loadServices,loadMetadata,loadReadiness,loadSourceConflict,loadPhotographyReadiness,referralLastMile=async()=>null}){
  const json=(x,status=200)=>Response.json(x,{status,headers:{'Cache-Control':'no-store'}});
  const ownerEnabled=config.appsScriptOwnerEnabled===true&&config.allMarketingWritersCovered===true&&config.cutover?.verified===true&&Number.isSafeInteger(config.cutover.at)&&config.cutover.at>0&&config.cutover.at<=now();
  // Real production requests authenticate before the OFF gate solely to admit the inert probe.
@@ -11,6 +11,14 @@ export async function ownerProxy(request,{config,secret,io,provider,claims,now=(
  if(Buffer.byteLength(raw)>1100000||!/^\d{13}$/.test(ts||'')||Math.abs(Number(ts)-now())>300000||!/^[a-f0-9]{64}$/.test(signature||'')||!timingSafeEqual(Buffer.from(signature),Buffer.from(signOwnerRequest(secret,ts,raw))))return json({error:'unauthorized'},401);
  let body;try{body=JSON.parse(raw);}catch{return json({error:'invalid'},400);}if(!body||typeof body!=='object'||Array.isArray(body)||body.version!==1||!ACTIONS.has(body.action)||typeof body.data!=='object'||body.data===null||Array.isArray(body.data))return json({error:'invalid'},400);
  const d=body.data;
+ // Separately authenticated, fixed read-only diagnostic. It never loads send
+ // services and is safe while live review owners remain enabled.
+ if(body.action==='photographyReadiness'){
+  if(production!==true||!ownerEnabled)return json({error:'unauthorized'},401);
+  if(Object.keys(body).length!==3||Object.keys(d).length!==1||!Object.hasOwn(d,'probeId')||typeof d.probeId!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(d.probeId))return json({error:'invalid'},400);
+  if(typeof loadPhotographyReadiness!=='function')return json({error:'photography_readiness_unavailable'},409);
+  try{return json({version:1,action:body.action,probeId:d.probeId,authenticated:true,readOnly:true,readiness:await loadPhotographyReadiness()});}catch{return json({error:'photography_readiness_unavailable'},409);}
+ }
  if(['installationProbe','referralRatingMetadata','installationReadiness','installationSourceConflict'].includes(body.action)){
   if(production!==true)return json({error:'unauthorized'},401);
   if(Object.keys(body).length!==3||Object.keys(d).length!==1||!Object.hasOwn(d,'probeId')||typeof d.probeId!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(d.probeId))return json({error:'invalid'},400);
